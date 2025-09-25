@@ -1,0 +1,93 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.6
+    container_name: eventify-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+      KC_LOG_LEVEL: INFO
+    ports:
+      - "8080:8080"
+    volumes:
+      - eventify_keycloak_data:/opt/keycloak/data
+    networks:
+      - eventify_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;grep -q '200 OK' <&3"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  postgres:
+    image: postgres:15
+    container_name: eventify-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: CanvasHarsha123
+      POSTGRES_DB: eventifydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - eventify_postgres_data:/var/lib/postgresql/data
+    networks:
+      - eventify_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U happeninguser -d happeningdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+
+  redis:
+    image: redis:7-alpine
+    container_name: eventify-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - eventify_redis_data:/data
+    networks:
+      - eventify_net
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: eventify-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: eventify
+      RABBITMQ_DEFAULT_PASS: eventify
+    networks:
+      - eventify_net
+
+  # notifications-worker:
+  #   build:
+  #     context: ../server
+  #     dockerfile: Dockerfile
+  #   container_name: eventify-notifications-worker
+  #   command: ["npm", "run", "worker:notifications"]
+  #   environment:
+  #     - RABBITMQ_URL=amqp://eventify:eventify@rabbitmq:5672
+  #   depends_on:
+  #     - rabbitmq
+  #   networks:
+  #     - eventify_net
+
+volumes:
+  eventify_keycloak_data:
+  eventify_postgres_data:
+  eventify_redis_data:
+
+networks:
+  eventify_net:
+    driver: bridge
