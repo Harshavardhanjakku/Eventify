@@ -39,7 +39,8 @@ export default function MediaPage({ keycloak }) {
         duration: 60,
         requirements: "",
         contact_email: "",
-        contact_phone: ""
+        contact_phone: "",
+        created_by: currentUserId
     });
     const [showCreateModal, setShowCreateModal] = useState(false);
     // Edit-event modal state
@@ -65,6 +66,7 @@ export default function MediaPage({ keycloak }) {
     const isSwitchView = Boolean(switchOrgId);
 
     const toLower = (v) => String(v || '').toLowerCase();
+    // Enhanced role-based event filtering
     const userOrgIdsForBooking = useMemo(() => {
         if (!currentOrganization) return new Set();
         
@@ -80,6 +82,27 @@ export default function MediaPage({ keycloak }) {
         return hasOrganizerRole ? new Set([currentOrganization.id]) : new Set();
     }, [currentOrganization]);
 
+    // Separate events by user's relationship to them
+
+    const availableEvents = useMemo(() => {
+        if (!currentUserId) return [];
+        return events.filter(ev => 
+            userOrgIdsForBooking.has(ev.org_id) && 
+            ev.created_by !== currentUserId && // Exclude events created by current user
+            ev.available_slots > 0 && // Only show events with available slots
+            (!isSwitchView || String(ev.org_id) === String(switchOrgId))
+        );
+    }, [events, userOrgIdsForBooking, currentUserId, isSwitchView, switchOrgId]);
+
+    const managedEvents = useMemo(() => {
+        if (!currentUserId) return [];
+        return events.filter(ev => 
+            organizerOrgIds.has(ev.org_id) && 
+            ev.created_by === currentUserId && // Only show events created by current user
+            (!isSwitchView || String(ev.org_id) === String(switchOrgId))
+        );
+    }, [events, organizerOrgIds, currentUserId, isSwitchView, switchOrgId]);
+
     const switchOrgRole = useMemo(() => {
         if (!isSwitchView) return null;
         const org = organizations.find(o => String(o.id) === String(switchOrgId));
@@ -93,6 +116,13 @@ export default function MediaPage({ keycloak }) {
             setNewEvent(prev => ({ ...prev, org_id: String(switchOrgId) }));
         }
     }, [isSwitchView, isSwitchOrganizer, switchOrgId]);
+
+    // Update newEvent with current user ID when it changes
+    useEffect(() => {
+        if (currentUserId) {
+            setNewEvent(prev => ({ ...prev, created_by: currentUserId }));
+        }
+    }, [currentUserId]);
 
     const showUpcomingSection = !isSwitchView || !isSwitchOrganizer;
     const showYourEventsSection = !isSwitchView || !isSwitchOrganizer;
@@ -264,8 +294,8 @@ export default function MediaPage({ keycloak }) {
                     <div className="max-w-7xl mx-auto">
                         <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 backdrop-blur-xl border border-cyan-400/20 rounded-2xl p-4">
                             <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center">
-                                    <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center border border-white/20">
+                                    <svg className="w-4 h-4 text-white/80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
                                     </svg>
                                 </div>
@@ -335,7 +365,7 @@ export default function MediaPage({ keycloak }) {
                                 const isCurrent = currentOrganization?.id === org.id;
                                 
                                 return (
-                                    <div key={org.id} className={`group relative rounded-2xl border backdrop-blur-xl shadow-2xl p-6 transition-all duration-300 ${
+                                    <div key={org.id} className={`group relative rounded-2xl border backdrop-blur-xl shadow-2xl p-3 transition-all duration-300 ${
                                         isCurrent 
                                             ? 'border-cyan-400/50 bg-cyan-500/10 hover:bg-cyan-500/15' 
                                             : 'border-white/10 bg-white/5 hover:bg-white/10'
@@ -431,8 +461,20 @@ export default function MediaPage({ keycloak }) {
                     <div className="max-w-7xl mx-auto">
                         <div className="flex items-center justify-between mb-8">
                             <div className="flex items-center gap-6">
-                                <h2 className="text-2xl font-bold text-white tracking-wide">Upcoming Events</h2>
-                                <div className="text-sm text-white/60">{events.filter(ev => userOrgIdsForBooking.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).length} events</div>
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center border border-green-500/30">
+                                        <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h2 className="text-2xl font-bold text-white tracking-wide">Available Events</h2>
+                                        <p className="text-sm text-white/60">Events you can book</p>
+                                    </div>
+                                </div>
+                                <div className="text-sm text-white/60 bg-white/5 px-3 py-1 rounded-full border border-white/10">
+                                    {availableEvents.length} events
+                                </div>
                             </div>
                             <button onClick={fetchEvents} className="px-4 py-2 bg-white/10 backdrop-blur-xl border border-white/15 rounded-xl text-sm font-medium text-white hover:bg-white/15 transition-all duration-300 shadow-lg inline-flex items-center justify-center">
                                 <svg width="20" height="20" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -442,7 +484,7 @@ export default function MediaPage({ keycloak }) {
                             </button>
                         </div>
 
-                        {events.filter(ev => userOrgIdsForBooking.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).length === 0 ? (
+                        {availableEvents.length === 0 ? (
                             <div className="text-center py-20 bg-white/5 backdrop-blur-3xl rounded-3xl border border-white/10 shadow-2xl">
                                 <div className="text-6xl mb-6">
                                     <i className="fa-solid fa-folder-open" style={{ color: "#96C2DB", fontSize: "45px" }}></i>
@@ -458,10 +500,7 @@ export default function MediaPage({ keycloak }) {
                             </div>
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-                                {events
-                                    .filter(ev => userOrgIdsForBooking.has(ev.org_id))
-                                    .filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId))
-                                    .map((ev) => (
+                                {availableEvents.map((ev) => (
                                         <div key={ev.id} className="group relative rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl p-4">
                                             <div className="text-lg font-semibold text-white mb-1">{ev.name}</div>
                                             <div className="text-sm text-white/70 mb-2 line-clamp-2">{ev.description || "No description"}</div>
@@ -490,8 +529,20 @@ export default function MediaPage({ keycloak }) {
                     <div className="max-w-7xl mx-auto">
                         <div className="flex items-center justify-between mb-8">
                             <div className="flex items-center gap-6">
-                                <h2 className="text-2xl font-bold text-white tracking-wide">Your Events</h2>
-                                <div className="text-sm text-white/60">{myBookings.length} bookings</div>
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full bg-cyan-500/20 flex items-center justify-center border border-cyan-500/30">
+                                        <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h2 className="text-2xl font-bold text-white tracking-wide">Your Bookings</h2>
+                                        <p className="text-sm text-white/60">Events you've booked</p>
+                                    </div>
+                                </div>
+                                <div className="text-sm text-white/60 bg-white/5 px-3 py-1 rounded-full border border-white/10">
+                                    {myBookings.length} bookings
+                                </div>
                             </div>
                             <button onClick={() => fetchMyBookings(currentUserId)} className="px-4 py-2 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-xl text-sm font-medium text-white hover:bg白/15 transition-all duration-300 shadow-lg inline-flex items-center justify-center">
                                 <svg width="20" height="20" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -567,14 +618,25 @@ export default function MediaPage({ keycloak }) {
                 </div>
             )}
 
+
             {/* Events organized by you */}
             {(!isSwitchView || isSwitchOrganizer) && (
                 <div className="px-8 pb-20" id="organizer-events-list">
                     <div className="max-w-7xl mx-auto">
                         <div className="flex items-center justify-between mb-6">
                             <div className="flex items-center gap-6">
-                                <h3 className="text-xl font-semibold text-white">Events organized by you</h3>
-                                <div className="text-sm text-white/70">{events.filter(ev => organizerOrgIds.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).length} events</div>
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center border border-purple-500/30">
+                                        <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xl font-semibold text-white">Events organized by you</h3>
+                                        <p className="text-sm text-white/60">Events you manage</p>
+                                    </div>
+                                </div>
+                                <div className="text-sm text-white/70">{managedEvents.length} events</div>
                             </div>
                             <button onClick={fetchEvents} className="px-3 py-1.5 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-lg text-xs font-medium text-white hover:bg-white/15 shadow inline-flex items-center justify-center">
                                 <svg width="18" height="18" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -584,13 +646,13 @@ export default function MediaPage({ keycloak }) {
                             </button>
                         </div>
 
-                        {events.filter(ev => organizerOrgIds.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).length === 0 ? (
+                        {managedEvents.length === 0 ? (
                             <div className="text-center py-10 bg-white/5 backdrop-blur-3xl rounded-2xl border border-white/10 shadow">
                                 <p className="text-white/70">No events created yet. Use the Create Event button to add one.</p>
                             </div>
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                {events.filter(ev => organizerOrgIds.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).map((ev) => {
+                                {managedEvents.map((ev) => {
                                     const org = organizations.find(o => o.id === ev.org_id);
                                     return (
                                         <div key={`org-${ev.id}`} className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
@@ -824,17 +886,18 @@ export default function MediaPage({ keycloak }) {
                                         description: newEvent.description,
                                         category: newEvent.category,
                                         event_date: newEvent.event_date,
-                                                total_slots: newEvent.total_slots,
-                                                location: newEvent.location,
-                                                price: newEvent.price,
-                                                max_attendees: newEvent.max_attendees,
-                                                tags: newEvent.tags,
-                                                event_type: newEvent.event_type,
-                                                duration: newEvent.duration,
-                                                requirements: newEvent.requirements,
-                                                contact_email: newEvent.contact_email,
-                                                contact_phone: newEvent.contact_phone
-                                            });
+                                        total_slots: newEvent.total_slots,
+                                        location: newEvent.location,
+                                        price: newEvent.price,
+                                        max_attendees: newEvent.max_attendees,
+                                        tags: newEvent.tags,
+                                        event_type: newEvent.event_type,
+                                        duration: newEvent.duration,
+                                        requirements: newEvent.requirements,
+                                        contact_email: newEvent.contact_email,
+                                        contact_phone: newEvent.contact_phone,
+                                        created_by: currentUserId
+                                    });
                                             setMessage("✅ Event created successfully");
                                     await fetchEvents();
                                             setNewEvent({ 
@@ -1362,10 +1425,10 @@ export default function MediaPage({ keycloak }) {
                 <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6 z-50">
                     <div className="bg-black/90 backdrop-blur-xl rounded-3xl max-w-5xl w-full max-h-[90vh] overflow-y-auto border border-white/10 shadow-2xl">
                         {/* Modal Header */}
-                        <div className="flex items-center justify-between p-6 border-b border-white/10">
+                        <div className="flex items-center justify-between p-4 border-b border-white/10">
                             <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center">
-                                    <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20">
+                                    <svg className="w-5 h-5 text-white/80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
                                     </svg>
                                 </div>
@@ -1504,7 +1567,7 @@ export default function MediaPage({ keycloak }) {
                         </div>
 
                         {/* Modal Footer */}
-                        <div className="flex justify-end space-x-3 p-6 border-t border-white/10">
+                        <div className="flex justify-end space-x-3 p-4 border-t border-white/10">
                             <button
                                 onClick={() => {
                                     setShowOrgModal(false);

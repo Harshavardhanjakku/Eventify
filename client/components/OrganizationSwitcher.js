@@ -114,8 +114,8 @@ export default function OrganizationSwitcher({ className = "" }) {
           </>
         ) : (
           <>
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-600 flex items-center justify-center shadow-lg group-hover:shadow-xl transition-all duration-300 group-hover:scale-105">
-              <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center border border-white/20 transition-all duration-300 group-hover:bg-white/15 group-hover:border-white/30">
+              <svg className="w-4 h-4 text-white/80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
               </svg>
             </div>
@@ -218,18 +218,18 @@ export default function OrganizationSwitcher({ className = "" }) {
                       key={org.id}
                       onClick={() => handleOrgSwitch(org)}
                       disabled={isCurrent}
-                      className={`group w-full flex items-center gap-4 p-4 rounded-2xl transition-all duration-300 text-left ${
+                      className={`group w-full flex items-center gap-3 p-3 rounded-2xl transition-all duration-300 text-left ${
                         isCurrent 
                           ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border border-cyan-400/30 cursor-not-allowed' 
                           : 'hover:bg-white/8 hover:border-white/20 border border-transparent'
                       }`}
                     >
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg transition-all duration-300 ${
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all duration-300 ${
                         isCurrent 
-                          ? 'bg-gradient-to-br from-cyan-400 to-blue-500 shadow-cyan-500/25' 
-                          : 'bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-600 group-hover:shadow-xl group-hover:scale-105'
+                          ? 'bg-cyan-500/20 border-cyan-400/40' 
+                          : 'bg-white/10 border-white/20 group-hover:bg-white/15 group-hover:border-white/30'
                       }`}>
-                        <svg className="w-7 h-7 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <svg className="w-5 h-5 text-white/80" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                           <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
                         </svg>
                       </div>
