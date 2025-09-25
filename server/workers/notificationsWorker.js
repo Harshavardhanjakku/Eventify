@@ -1,7 +1,7 @@
 const amqplib = require('amqplib');
 require('dotenv').config();
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://happening:happening@rabbitmq:5672';
+const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://eventify:eventify@rabbitmq:5672';
 const QUEUE = process.env.NOTIFICATIONS_QUEUE || 'notifications';
 
 async function start() {

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { io } from "socket.io-client";
 import API from "../lib/api";
 import InvitationsButton from "../components/InvitationsButton";
 import { useRouter } from "next/router";
@@ -14,7 +15,23 @@ export default function MediaPage({ keycloak }) {
     const [myBookings, setMyBookings] = useState([]);
     // Create-event form state
     const [creating, setCreating] = useState(false);
-    const [newEvent, setNewEvent] = useState({ org_id: "", name: "", description: "", category: "webinar", event_date: "", total_slots: 50 });
+    const [newEvent, setNewEvent] = useState({ 
+        org_id: "", 
+        name: "", 
+        description: "", 
+        category: "webinar", 
+        event_date: "", 
+        total_slots: 50,
+        location: "",
+        price: 0,
+        max_attendees: 100,
+        tags: "",
+        event_type: "online",
+        duration: 60,
+        requirements: "",
+        contact_email: "",
+        contact_phone: ""
+    });
     const [showCreateModal, setShowCreateModal] = useState(false);
     // Edit-event modal state
     const [showEditModal, setShowEditModal] = useState(false);
@@ -27,6 +44,8 @@ export default function MediaPage({ keycloak }) {
     // Seat selection for upcoming events
     const [showSeatSelect, setShowSeatSelect] = useState(false);
     const [seatSelect, setSeatSelect] = useState(null);
+    const socketRef = useRef(null);
+    const holdTimersRef = useRef(new Map()); // key: seatNo -> intervalId
     // Organization modal state
     const [showOrgModal, setShowOrgModal] = useState(false);
     const [selectedOrg, setSelectedOrg] = useState(null);
@@ -166,11 +185,11 @@ export default function MediaPage({ keycloak }) {
 
     if (!keycloak?.authenticated) {
         return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center">
-                <div className="text-center p-12 bg-white/80 backdrop-blur-3xl rounded-3xl border border-blue-200/50 shadow-2xl max-w-md">
-                    <h2 className="text-3xl font-bold text-gray-800 mb-4 tracking-wide">Happening</h2>
-                    <p className="text-gray-600 mb-8 leading-relaxed">Your multi-tenant support portal</p>
-                    <button onClick={() => keycloak.login()} className="px-8 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-2xl hover:from-blue-400 hover:to-blue-500 transition-all font-bold shadow-2xl hover:shadow-3xl hover:scale-105 transform duration-300 border border-blue-300 tracking-wider">ENTER</button>
+            <div className="min-h-screen bg-black flex items-center justify-center">
+                <div className="text-center p-12 bg-black/90 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl max-w-md">
+                    <h2 className="text-3xl font-bold text-white mb-4 tracking-wide">Eventify</h2>
+                    <p className="text-white/70 mb-8 leading-relaxed">Your modern event management platform</p>
+                    <button onClick={() => keycloak.login()} className="px-8 py-3 bg-cyan-300 hover:bg-cyan-400 text-black rounded-2xl transition-all font-bold shadow-2xl hover:shadow-3xl hover:scale-105 transform duration-300 tracking-wider">Get Started</button>
                 </div>
             </div>
         );
@@ -178,10 +197,10 @@ export default function MediaPage({ keycloak }) {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center">
+            <div className="min-h-screen bg-black flex items-center justify-center">
                 <div className="text-center">
-                    <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-6 shadow-2xl"></div>
-                    <p className="text-gray-700 text-xl font-semibold tracking-wide">Loading...</p>
+                    <div className="w-16 h-16 border-4 border-white/20 border-t-cyan-300 rounded-full animate-spin mb-6 shadow-2xl"></div>
+                    <p className="text-white text-xl font-semibold tracking-wide">Loading...</p>
                 </div>
             </div>
         );
@@ -360,7 +379,7 @@ export default function MediaPage({ keycloak }) {
                                                         const res = await API.get(`/events/${ev.id}/seats`);
                                                         const { total, taken } = res.data || { total: ev.total_slots, taken: [] };
                                                         // Build seat grid metadata
-                                                        const seats = Array.from({ length: total }, (_, i) => ({ seat_no: i + 1, taken: taken?.includes(i + 1) }));
+                                            const seats = Array.from({ length: total }, (_, i) => ({ seat_no: i + 1, taken: taken?.includes(i + 1), held: false, selected: false }));
                                                         setSeatSelect({ event: ev, seats, max: Math.max(0, Number(ev.available_slots) || 0) });
                                                         setShowSeatSelect(true);
                                                     } catch (e) {
@@ -477,8 +496,8 @@ export default function MediaPage({ keycloak }) {
                         </div>
 
                         {events.filter(ev => organizerOrgIds.has(ev.org_id)).filter(ev => !isSwitchView || String(ev.org_id) === String(switchOrgId)).length === 0 ? (
-                            <div className="text-center py-10 bg-white/80 backdrop-blur-3xl rounded-2xl border border-blue-200/50 shadow">
-                                <p className="text-gray-600">No events created yet. Use the Create Event button to add one.</p>
+                            <div className="text-center py-10 bg-white/5 backdrop-blur-3xl rounded-2xl border border-white/10 shadow">
+                                <p className="text-white/70">No events created yet. Use the Create Event button to add one.</p>
                             </div>
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -536,22 +555,48 @@ export default function MediaPage({ keycloak }) {
 
             {/* Modal: Create Event */}
             {showCreateModal && (
-                <div className="fixed inset-0 z-[10000] flex items-center justify-center">
-                    <div className="absolute inset-0 bg-black/40" onClick={() => setShowCreateModal(false)}></div>
-                    <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-4xl mx-4 p-6">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-xl font-semibold text-gray-800">Create Event</h3>
-                            <button onClick={() => setShowCreateModal(false)} className="text-gray-500 hover:text-gray-700">✕</button>
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowCreateModal(false)}></div>
+                    <div className="relative bg-black/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/10 w-full max-w-6xl mx-4 max-h-[90vh] overflow-y-auto">
+                        {/* Header */}
+                        <div className="sticky top-0 bg-black/90 backdrop-blur-xl border-b border-white/10 p-6 rounded-t-3xl">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-cyan-300/20 text-cyan-300 flex items-center justify-center">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                        </svg>
                         </div>
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white">Create Event</h3>
+                                        <p className="text-sm text-white/60">Fill in the details to create a new event</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setShowCreateModal(false)} className="w-8 h-8 rounded-lg bg-white/10 text-white/60 hover:text-white hover:bg-white/20 flex items-center justify-center transition-all">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Form Content */}
+                        <div className="p-6 space-y-6">
+                            {/* Basic Information */}
+                            <div className="space-y-4">
+                                <h4 className="text-lg font-semibold text-white flex items-center gap-2">
+                                    <div className="w-1 h-6 bg-cyan-300 rounded-full"></div>
+                                    Basic Information
+                                </h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Organization</label>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Organization *</label>
                                 {isSwitchView ? (
-                                    <select value={newEvent.org_id || String(switchOrgId || '')} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} disabled className="w-full border rounded-lg px-3 py-2 text-sm bg-gray-50">
+                                            <select value={newEvent.org_id || String(switchOrgId || '')} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} disabled className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white/60">
                                         <option value={String(switchOrgId || '')}>{organizations.find(o => String(o.id) === String(switchOrgId))?.name || 'Selected organization'}</option>
                                     </select>
                                 ) : (
-                                    <select value={newEvent.org_id} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} className="w-full border rounded-lg px-3 py-2 text-sm">
+                                            <select value={newEvent.org_id} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
                                         <option value="">Select organization</option>
                                         {organizations.filter(o => String(o.role).toLowerCase() === 'organizer').map(o => (
                                             <option key={o.id} value={o.id}>{o.name}</option>
@@ -560,32 +605,122 @@ export default function MediaPage({ keycloak }) {
                                 )}
                             </div>
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Name</label>
-                                <input value={newEvent.name} onChange={(e) => setNewEvent({ ...newEvent, name: e.target.value })} className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Event name" />
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Event Name *</label>
+                                        <input value={newEvent.name} onChange={(e) => setNewEvent({ ...newEvent, name: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Enter event name" />
                             </div>
-                            <div className="md:col-span-2">
-                                <label className="block text-sm text-gray-700 mb-1">Description</label>
-                                <textarea value={newEvent.description} onChange={(e) => setNewEvent({ ...newEvent, description: e.target.value })} className="w-full border rounded-lg px-3 py-2 text-sm" rows={3} placeholder="Event description" />
                             </div>
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Category</label>
-                                <select value={newEvent.category} onChange={(e) => setNewEvent({ ...newEvent, category: e.target.value })} className="w-full border rounded-lg px-3 py-2 text-sm">
+                                    <label className="block text-sm font-medium text-white/80 mb-2">Description</label>
+                                    <textarea value={newEvent.description} onChange={(e) => setNewEvent({ ...newEvent, description: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" rows={3} placeholder="Describe your event..." />
+                                </div>
+                            </div>
+
+                            {/* Event Details */}
+                            <div className="space-y-4">
+                                <h4 className="text-lg font-semibold text-white flex items-center gap-2">
+                                    <div className="w-1 h-6 bg-cyan-300 rounded-full"></div>
+                                    Event Details
+                                </h4>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Category</label>
+                                        <select value={newEvent.category} onChange={(e) => setNewEvent({ ...newEvent, category: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
                                     <option value="webinar">Webinar</option>
-                                    <option value="concert">Concert</option>
+                                            <option value="conference">Conference</option>
+                                            <option value="workshop">Workshop</option>
                                     <option value="hackathon">Hackathon</option>
+                                            <option value="meetup">Meetup</option>
+                                            <option value="concert">Concert</option>
+                                            <option value="exhibition">Exhibition</option>
+                                            <option value="other">Other</option>
                                 </select>
                             </div>
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Event Date & Time</label>
-                                <input type="datetime-local" value={newEvent.event_date} onChange={(e) => setNewEvent({ ...newEvent, event_date: e.target.value })} className="w-full border rounded-lg px-3 py-2 text-sm" />
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Event Type</label>
+                                        <select value={newEvent.event_type} onChange={(e) => setNewEvent({ ...newEvent, event_type: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
+                                            <option value="online">Online</option>
+                                            <option value="offline">Offline</option>
+                                            <option value="hybrid">Hybrid</option>
+                                        </select>
                             </div>
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Total Slots</label>
-                                <input type="number" min={1} value={newEvent.total_slots} onChange={(e) => setNewEvent({ ...newEvent, total_slots: Math.max(1, Number(e.target.value) || 1) })} className="w-full border rounded-lg px-3 py-2 text-sm" />
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Duration (minutes)</label>
+                                        <input type="number" min={15} step={15} value={newEvent.duration} onChange={(e) => setNewEvent({ ...newEvent, duration: Number(e.target.value) || 60 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="60" />
                             </div>
                         </div>
-                        <div className="mt-4 flex justify-end gap-2">
-                            <button onClick={() => setShowCreateModal(false)} className="px-4 py-2 rounded-xl border text-sm">Cancel</button>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Event Date & Time *</label>
+                                        <input type="datetime-local" value={newEvent.event_date} onChange={(e) => setNewEvent({ ...newEvent, event_date: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Location</label>
+                                        <input value={newEvent.location} onChange={(e) => setNewEvent({ ...newEvent, location: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Event location or online link" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Capacity & Pricing */}
+                            <div className="space-y-4">
+                                <h4 className="text-lg font-semibold text-white flex items-center gap-2">
+                                    <div className="w-1 h-6 bg-cyan-300 rounded-full"></div>
+                                    Capacity & Pricing
+                                </h4>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Total Slots</label>
+                                        <input type="number" min={1} value={newEvent.total_slots} onChange={(e) => setNewEvent({ ...newEvent, total_slots: Math.max(1, Number(e.target.value) || 1) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Max Attendees</label>
+                                        <input type="number" min={1} value={newEvent.max_attendees} onChange={(e) => setNewEvent({ ...newEvent, max_attendees: Math.max(1, Number(e.target.value) || 100) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Price ($)</label>
+                                        <input type="number" min={0} step={0.01} value={newEvent.price} onChange={(e) => setNewEvent({ ...newEvent, price: Number(e.target.value) || 0 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="0.00" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Additional Information */}
+                            <div className="space-y-4">
+                                <h4 className="text-lg font-semibold text-white flex items-center gap-2">
+                                    <div className="w-1 h-6 bg-cyan-300 rounded-full"></div>
+                                    Additional Information
+                                </h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Tags</label>
+                                        <input value={newEvent.tags} onChange={(e) => setNewEvent({ ...newEvent, tags: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="tech, workshop, free (comma separated)" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Requirements</label>
+                                        <input value={newEvent.requirements} onChange={(e) => setNewEvent({ ...newEvent, requirements: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Laptop, internet connection, etc." />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Contact Email</label>
+                                        <input type="email" value={newEvent.contact_email} onChange={(e) => setNewEvent({ ...newEvent, contact_email: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="contact@example.com" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-white/80 mb-2">Contact Phone</label>
+                                        <input type="tel" value={newEvent.contact_phone} onChange={(e) => setNewEvent({ ...newEvent, contact_phone: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="+1 (555) 123-4567" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="sticky bottom-0 bg-black/90 backdrop-blur-xl border-t border-white/10 p-6 rounded-b-3xl">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="text-xs text-white/60">
+                                    * Required fields
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <button onClick={() => setShowCreateModal(false)} className="px-6 py-3 rounded-xl border border-white/20 text-white/80 font-medium hover:bg-white/10 transition-all">
+                                        Cancel
+                                    </button>
                             <button disabled={creating} onClick={async () => {
                                 if (!newEvent.org_id || !newEvent.name || !newEvent.event_date) {
                                     setMessage("❌ Please fill organization, name and date");
@@ -600,11 +735,36 @@ export default function MediaPage({ keycloak }) {
                                         description: newEvent.description,
                                         category: newEvent.category,
                                         event_date: newEvent.event_date,
-                                        total_slots: newEvent.total_slots
-                                    });
-                                    setMessage("✅ Event created");
+                                                total_slots: newEvent.total_slots,
+                                                location: newEvent.location,
+                                                price: newEvent.price,
+                                                max_attendees: newEvent.max_attendees,
+                                                tags: newEvent.tags,
+                                                event_type: newEvent.event_type,
+                                                duration: newEvent.duration,
+                                                requirements: newEvent.requirements,
+                                                contact_email: newEvent.contact_email,
+                                                contact_phone: newEvent.contact_phone
+                                            });
+                                            setMessage("✅ Event created successfully");
                                     await fetchEvents();
-                                    setNewEvent({ org_id: "", name: "", description: "", category: "webinar", event_date: "", total_slots: 50 });
+                                            setNewEvent({ 
+                                                org_id: "", 
+                                                name: "", 
+                                                description: "", 
+                                                category: "webinar", 
+                                                event_date: "", 
+                                                total_slots: 50,
+                                                location: "",
+                                                price: 0,
+                                                max_attendees: 100,
+                                                tags: "",
+                                                event_type: "online",
+                                                duration: 60,
+                                                requirements: "",
+                                                contact_email: "",
+                                                contact_phone: ""
+                                            });
                                     setShowCreateModal(false);
                                     try { document.getElementById('organizer-events-list')?.scrollIntoView({ behavior: 'smooth' }); } catch (_) { }
                                 } catch (e) {
@@ -612,7 +772,26 @@ export default function MediaPage({ keycloak }) {
                                 } finally {
                                     setCreating(false);
                                 }
-                            }} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold disabled:opacity-50">{creating ? 'Creating...' : 'Create Event'}</button>
+                                    }} className="px-8 py-3 bg-cyan-300 hover:bg-cyan-400 text-black font-semibold rounded-xl transition-all disabled:opacity-50 flex items-center gap-2">
+                                        {creating ? (
+                                            <>
+                                                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
+                                                    <path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill="currentColor"/>
+                                                </svg>
+                                                Creating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <path d="M12 5V19M5 12H19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                </svg>
+                                                Create Event
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -621,24 +800,24 @@ export default function MediaPage({ keycloak }) {
             {/* Modal: Edit Event Description */}
             {showEditModal && editingEvent && (
                 <div className="fixed inset-0 z-[10000] flex items-center justify-center">
-                    <div className="absolute inset-0 bg-black/40" onClick={() => setShowEditModal(false)}></div>
-                    <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-xl mx-4 p-6">
+                    <div className="absolute inset-0 bg-black/50" onClick={() => setShowEditModal(false)}></div>
+                    <div className="relative bg-black/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10 w-full max-w-xl mx-4 p-6">
                         <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-xl font-semibold text-gray-800">Edit Event</h3>
-                            <button onClick={() => setShowEditModal(false)} className="text-gray-500 hover:text-gray-700">✕</button>
+                            <h3 className="text-xl font-semibold text-white">Edit Event</h3>
+                            <button onClick={() => setShowEditModal(false)} className="text-white/60 hover:text-white">✕</button>
                         </div>
                         <div className="space-y-4">
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Name</label>
-                                <input disabled value={editingEvent.name || ''} className="w-full border rounded-lg px-3 py-2 text-sm bg-gray-50" />
+                                <label className="block text-sm text-white/60 mb-1">Name</label>
+                                <input disabled value={editingEvent.name || ''} className="w-full border border-white/20 rounded-lg px-3 py-2 text-sm bg-white/5 text-white placeholder-white/50" />
                             </div>
                             <div>
-                                <label className="block text-sm text-gray-700 mb-1">Description</label>
-                                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full border rounded-lg px-3 py-2 text-sm" rows={4} placeholder="Event description" />
+                                <label className="block text-sm text-white/60 mb-1">Description</label>
+                                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full border border-white/20 rounded-lg px-3 py-2 text-sm bg-white/5 text-white placeholder-white/50" rows={4} placeholder="Event description" />
                             </div>
                         </div>
                         <div className="mt-5 flex justify-end gap-2">
-                            <button onClick={() => setShowEditModal(false)} className="px-4 py-2 rounded-xl border text-sm">Cancel</button>
+                            <button onClick={() => setShowEditModal(false)} className="px-4 py-2 rounded-xl border border-white/20 text-white/80 font-medium hover:bg-white/10 text-sm">Cancel</button>
                             <button onClick={async () => {
                                 try {
                                     await API.put(`/events/${editingEvent.id}`, { description: editDescription });
@@ -648,7 +827,7 @@ export default function MediaPage({ keycloak }) {
                                 } catch (e) {
                                     setMessage('❌ Failed to update: ' + (e.response?.data?.error || e.message));
                                 }
-                            }} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold">Save</button>
+                            }} className="px-6 py-2 bg-cyan-300 hover:bg-cyan-400 text-black rounded-xl text-sm font-semibold">Save</button>
                         </div>
                     </div>
                 </div>
@@ -656,27 +835,67 @@ export default function MediaPage({ keycloak }) {
 
             {/* Modal: Manage Seats for a Booking */}
             {showManageSeatsModal && manageBooking && (
-                <div className="fixed inset-0 z-[10000] flex items-center justify-center">
-                    <div className="absolute inset-0 bg-black/40" onClick={() => setShowManageSeatsModal(false)}></div>
-                    <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-xl mx-4 p-6">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-xl font-semibold text-gray-800">Manage Seats - {manageBooking.event_name}</h3>
-                            <button onClick={() => setShowManageSeatsModal(false)} className="text-gray-500 hover:text-gray-700">✕</button>
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowManageSeatsModal(false)}></div>
+                    <div className="relative bg-black/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/10 w-full max-w-2xl mx-4 max-h-[90vh] overflow-hidden">
+                        {/* Header */}
+                        <div className="sticky top-0 bg-black/90 backdrop-blur-xl border-b border-white/10 p-6 rounded-t-3xl">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-cyan-300/20 text-cyan-300 flex items-center justify-center">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                        </svg>
                         </div>
-                        <div className="text-sm text-gray-600 mb-3">Select seats to cancel. Confirmed seats are listed below.</div>
-                        <div className="grid grid-cols-6 gap-2 max-h-60 overflow-auto p-2 border rounded-lg">
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white">Manage Seats</h3>
+                                        <p className="text-sm text-white/60">{manageBooking.event_name}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setShowManageSeatsModal(false)} className="w-8 h-8 rounded-lg bg-white/10 text-white/60 hover:text-white hover:bg-white/20 flex items-center justify-center transition-all">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="p-6">
+                            <div className="mb-6 p-4 rounded-xl bg-white/5 border border-white/10">
+                                <p className="text-sm text-white/80">Select seats to cancel. Confirmed seats are listed below.</p>
+                            </div>
+                            
+                            <div className="grid grid-cols-6 gap-3 max-h-60 overflow-y-auto p-4 bg-white/5 rounded-xl border border-white/10">
                             {manageSeats.map((s, idx) => (
-                                <label key={`${s.booking_id || 'b'}-${s.seat_no}-${idx}`} className={`flex items-center gap-2 text-xs px-2 py-1 rounded border ${s.status === 'booked' ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
-                                    <input type="checkbox" disabled={s.status !== 'booked'} onChange={(e) => {
+                                    <label key={`${s.booking_id || 'b'}-${s.seat_no}-${idx}`} className={`flex items-center gap-2 text-xs px-3 py-2 rounded-xl border transition-all cursor-pointer ${s.status === 'booked' ? 'bg-green-500/20 border-green-500/30 text-green-300 hover:bg-green-500/30' : 'bg-white/5 border-white/20 text-white/60 opacity-60 cursor-not-allowed'}`}>
+                                        <input 
+                                            type="checkbox" 
+                                            disabled={s.status !== 'booked'} 
+                                            onChange={(e) => {
                                         if (e.target.checked) setManageSeats(prev => prev.map((x, i) => i === idx ? { ...x, _selected: true } : x));
                                         else setManageSeats(prev => prev.map((x, i) => i === idx ? { ...x, _selected: false } : x));
-                                    }} />
+                                            }} 
+                                            className="w-4 h-4 rounded border-white/20 bg-white/5 text-cyan-300 focus:ring-cyan-300 focus:ring-2"
+                                        />
                                     Seat {s.seat_no}
                                 </label>
                             ))}
                         </div>
-                        <div className="mt-5 flex justify-end gap-2">
-                            <button onClick={() => setShowManageSeatsModal(false)} className="px-4 py-2 rounded-xl border text-sm">Close</button>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="sticky bottom-0 bg-black/90 backdrop-blur-xl border-t border-white/10 p-6 rounded-b-3xl">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="text-xs text-white/60">
+                                    {manageSeats.filter(s => s._selected && s.status === 'booked').length} seat(s) selected for cancellation
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <button onClick={() => setShowManageSeatsModal(false)} className="px-6 py-3 rounded-xl border border-white/20 text-white/80 font-medium hover:bg-white/10 transition-all">
+                                        Close
+                                    </button>
                             <button onClick={async () => {
                                 const selected = manageSeats.filter(s => s._selected && s.status === 'booked');
                                 if (selected.length === 0) { setShowManageSeatsModal(false); return; }
@@ -703,7 +922,11 @@ export default function MediaPage({ keycloak }) {
                                 } catch (e) {
                                     setMessage('❌ Failed to cancel seats: ' + (e.response?.data?.error || e.message));
                                 }
-                            }} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold">Cancel Selected</button>
+                                    }} className="px-8 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-semibold transition-all">
+                                        Cancel Selected
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -711,28 +934,202 @@ export default function MediaPage({ keycloak }) {
 
             {/* Seat selection modal for booking */}
             {showSeatSelect && seatSelect?.event && (
-                <div className="fixed inset-0 z-[10000] flex items-center justify-center">
-                    <div className="absolute inset-0 bg-black/40" onClick={() => setShowSeatSelect(false)}></div>
-                    <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-3xl mx-4 p-6">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-xl font-semibold text-gray-800">Select Seats - {seatSelect.event.name}</h3>
-                            <button onClick={() => setShowSeatSelect(false)} className="text-gray-500 hover:text-gray-700">✕</button>
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowSeatSelect(false)}></div>
+                    <div className="relative bg-black/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/10 w-full max-w-4xl mx-4 max-h-[90vh] overflow-hidden">
+                        {/* Header */}
+                        <div className="sticky top-0 bg-black/90 backdrop-blur-xl border-b border-white/10 p-6 rounded-t-3xl">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-cyan-300/20 text-cyan-300 flex items-center justify-center">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M2 17L12 22L22 17" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                            <path d="M2 12L12 17L22 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                        </svg>
                         </div>
-                        <div className="text-sm text-gray-600 mb-3">Green = available, Red = booked. Select any available seats{typeof seatSelect?.max === 'number' ? ` (max ${seatSelect.max})` : ''}.</div>
-                        <div className="grid grid-cols-5 gap-2 max-h-[420px] overflow-auto p-2 border rounded-lg">
-                            {seatSelect.seats.map(s => (
-                                <button key={s.seat_no} disabled={s.taken} onClick={() => {
-                                    setSeatSelect(prev => ({ ...prev, seats: prev.seats.map(x => x.seat_no === s.seat_no ? { ...x, selected: !x.selected } : x) }));
-                                }} className={`px-2 py-2 text-xs rounded ${s.taken ? 'bg-red-200 text-red-800 cursor-not-allowed' : (s.selected ? 'bg-emerald-500 text-white' : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200')}`}>
-                                    {s.seat_no}
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white">Select Seats</h3>
+                                        <p className="text-sm text-white/60">{seatSelect.event.name}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setShowSeatSelect(false)} className="w-8 h-8 rounded-lg bg-white/10 text-white/60 hover:text-white hover:bg-white/20 flex items-center justify-center transition-all">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Socket wiring */}
+                        <SeatRealtime
+                            eventId={seatSelect.event.id}
+                            socketRef={socketRef}
+                            seatSelect={seatSelect}
+                            setSeatSelect={setSeatSelect}
+                            holdTimersRef={holdTimersRef}
+                        />
+
+                        {/* Content */}
+                        <div className="p-6">
+                            {/* Legend */}
+                            <div className="mb-6 p-4 rounded-xl bg-white/5 border border-white/10">
+                                <div className="flex items-center gap-6 text-sm">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-4 h-4 rounded bg-green-500"></div>
+                                        <span className="text-white/80">Available</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-4 h-4 rounded bg-red-500"></div>
+                                        <span className="text-white/80">Booked</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-4 h-4 rounded bg-cyan-300"></div>
+                                        <span className="text-white/80">Selected</span>
+                                    </div>
+                                    {typeof seatSelect?.max === 'number' && (
+                                        <div className="ml-auto text-cyan-300 font-medium">
+                                            Max: {seatSelect.max} seats
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Seat Grid */}
+                            <div className="grid grid-cols-8 md:grid-cols-10 gap-3 max-h-[400px] overflow-y-auto p-4 bg-white/5 rounded-xl border border-white/10">
+                                {seatSelect.seats.map(s => (
+                                    <button
+                                        key={s.seat_no}
+                                        disabled={s.taken || (s.held && !s.selected)}
+                                        onClick={() => {
+                                            const sock = socketRef.current;
+                                            if (!sock) return;
+                                            // Toggle selection: if already selected by me, release; else try to hold
+                                            if (s.selected) {
+                                                // Stop keepalive
+                                                const key = s.seat_no;
+                                                if (holdTimersRef.current.has(key)) {
+                                                    clearInterval(holdTimersRef.current.get(key));
+                                                    holdTimersRef.current.delete(key);
+                                                }
+                                                sock.emit('seat:release', { eventId: seatSelect.event.id, seatNo: s.seat_no }, () => {});
+                                                setSeatSelect(prev => ({
+                                                    ...prev,
+                                                    seats: prev.seats.map(x => x.seat_no === s.seat_no ? { ...x, selected: false, held: false } : x)
+                                                }));
+                                                return;
+                                            }
+
+                                            // Try to hold seat via socket first with a 10s TTL
+                                            sock.emit('seat:hold', { eventId: seatSelect.event.id, seatNo: s.seat_no, ttlSec: 10 }, (resp) => {
+                                                if (resp?.ok) {
+                                                    const ttl = Number(resp.ttl || 10);
+                                                    // mark selected, held and start a local countdown
+                                                    setSeatSelect(prev => ({
+                                                        ...prev,
+                                                        seats: prev.seats.map(x => x.seat_no === s.seat_no ? { ...x, selected: true, held: true, _countdown: ttl } : x)
+                                                    }));
+                                                    const key = s.seat_no;
+                                                    if (holdTimersRef.current.has(key)) clearInterval(holdTimersRef.current.get(key));
+                                                    const id = setInterval(() => {
+                                                        setSeatSelect(prev => {
+                                                            const nextSeats = prev.seats.map(x => {
+                                                                if (x.seat_no !== key) return x;
+                                                                const remaining = typeof x._countdown === 'number' ? x._countdown - 1 : ttl - 1;
+                                                                if (remaining <= 0) {
+                                                                    // stop timer; server will auto-release; reflect locally
+                                                                    try { clearInterval(holdTimersRef.current.get(key)); holdTimersRef.current.delete(key); } catch {}
+                                                                    return { ...x, selected: false, held: false, _countdown: 0 };
+                                                                }
+                                                                return { ...x, _countdown: remaining };
+                                                            });
+                                                            return { ...prev, seats: nextSeats };
+                                                        });
+                                                    }, 1000);
+                                                    holdTimersRef.current.set(key, id);
+                                                } else {
+                                                    setSeatSelect(prev => ({
+                                                        ...prev,
+                                                        seats: prev.seats.map(x => x.seat_no === s.seat_no ? { ...x, held: true, selected: false } : x)
+                                                    }));
+                                                }
+                                            });
+                                        }}
+                                        className={`
+                                            w-12 h-12 rounded-xl text-sm font-semibold transition-all duration-200 transform hover:scale-105 active:scale-95
+                                            ${s.taken
+                                                ? 'bg-red-500/20 text-red-400 border border-red-500/30 cursor-not-allowed opacity-60'
+                                                : s.selected
+                                                    ? 'bg-cyan-300 text-black border-2 border-cyan-300 shadow-lg shadow-cyan-300/25'
+                                                    : s.held
+                                                        ? 'bg-yellow-400/30 text-yellow-300 border border-yellow-400/40 cursor-not-allowed'
+                                                        : 'bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 hover:border-green-400'
+                                            }
+                                        `}
+                                    >
+                                    {s.selected && typeof s._countdown === 'number' ? `${s.seat_no}` : s.seat_no}
                                 </button>
                             ))}
                         </div>
-                        <div className="mt-5 flex items-center justify-between gap-3">
-                            <div className="text-xs text-gray-600">Selected: {seatSelect.seats.filter(s => s.selected).length}</div>
-                            <div className="flex gap-2">
-                                <button onClick={() => setShowSeatSelect(false)} className="px-4 py-2 rounded-xl border text-sm">Close</button>
-                                <button onClick={async () => {
+
+                            {/* Selection Summary */}
+                            <div className="mt-6 p-4 rounded-xl bg-white/5 border border-white/10">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-4">
+                                        <div className="text-sm text-white/60">
+                                            Selected Seats: 
+                                            <span className="ml-2 text-cyan-300 font-semibold text-lg">
+                                                {seatSelect.seats.filter(s => s.selected).length}
+                                            </span>
+                                        </div>
+                                        {seatSelect.seats.filter(s => s.selected).length > 0 && (
+                                            <div className="text-xs text-white/50">
+                                                {seatSelect.seats.filter(s => s.selected).map(s => s.seat_no).join(', ')}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="text-sm text-white/60">
+                                        Total Available: {seatSelect.seats.filter(s => !s.taken).length}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="sticky bottom-0 bg-black/90 backdrop-blur-xl border-t border-white/10 p-6 rounded-b-3xl">
+                            <div className="flex items-center justify-between gap-4">
+                                <div className="text-xs text-white/60">
+                                    {seatSelect.seats.filter(s => s.selected).length === 0 
+                                        ? "Select at least one seat to continue"
+                                        : `${seatSelect.seats.filter(s => s.selected).length} seat(s) selected`
+                                    }
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        onClick={() => {
+                                            try {
+                                                const sock = socketRef.current;
+                                                if (sock && seatSelect?.seats) {
+                                                    const owned = seatSelect.seats.filter(x => x.selected);
+                                                    for (const x of owned) {
+                                                        // stop timers and release
+                                                        if (holdTimersRef.current.has(x.seat_no)) {
+                                                            clearInterval(holdTimersRef.current.get(x.seat_no));
+                                                            holdTimersRef.current.delete(x.seat_no);
+                                                        }
+                                                        sock.emit('seat:release', { eventId: seatSelect.event.id, seatNo: x.seat_no }, () => {});
+                                                    }
+                                                }
+                                            } catch {}
+                                            setShowSeatSelect(false);
+                                        }} 
+                                        className="px-6 py-3 rounded-xl border border-white/20 text-white/80 font-medium hover:bg-white/10 transition-all"
+                                    >
+                                        Close
+                                    </button>
+                                    <button 
+                                        disabled={bookingLoading || seatSelect.seats.filter(s => s.selected).length === 0}
+                                        onClick={async () => {
                                     const selected = seatSelect.seats.filter(s => s.selected).map(s => s.seat_no);
                                     if (selected.length === 0) {
                                         alert('Select at least 1 seat.');
@@ -744,16 +1141,51 @@ export default function MediaPage({ keycloak }) {
                                     }
                                     try {
                                         setBookingLoading(true);
-                                        await API.post('/bookings', { event_id: seatSelect.event.id, user_id: currentUserId, seats: selected.length, seat_numbers: selected });
-                                        setMessage('✅ Booking submitted');
+                                                await API.post('/bookings', { 
+                                                    event_id: seatSelect.event.id, 
+                                                    user_id: currentUserId, 
+                                                    seats: selected.length, 
+                                                    seat_numbers: selected 
+                                                });
+                                                setMessage('✅ Booking submitted successfully');
                                         setShowSeatSelect(false);
+                                                // Release any holds we created
+                                                try {
+                                                    const sock = socketRef.current;
+                                                    if (sock) {
+                                                        const owned = seatSelect.seats.filter(x => x.selected);
+                                                        for (const x of owned) {
+                                                            sock.emit('seat:release', { eventId: seatSelect.event.id, seatNo: x.seat_no }, () => {});
+                                                        }
+                                                    }
+                                                } catch {}
                                         await Promise.all([fetchEvents(), fetchMyBookings(currentUserId)]);
                                     } catch (e) {
                                         setMessage('❌ Failed to book: ' + (e.response?.data?.error || e.message));
                                     } finally {
                                         setBookingLoading(false);
                                     }
-                                }} className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold">Book Selected</button>
+                                        }} 
+                                        className="px-8 py-3 bg-cyan-300 hover:bg-cyan-400 text-black font-semibold rounded-xl transition-all disabled:opacity-50 flex items-center gap-2"
+                                    >
+                                        {bookingLoading ? (
+                                            <>
+                                                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25"/>
+                                                    <path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill="currentColor"/>
+                                                </svg>
+                                                Booking...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                    <path d="M9 12L11 14L15 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                                </svg>
+                                                Book Selected
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -762,13 +1194,44 @@ export default function MediaPage({ keycloak }) {
 
             {/* Floating Create Event button - only when allowed */}
             {(!isSwitchView || isSwitchOrganizer) && (
+                <div className="fixed bottom-6 right-6 z-[9000] group">
+                    {/* Tooltip */}
+                    <div className="absolute bottom-full right-0 mb-3 px-3 py-2 bg-black/90 backdrop-blur-sm text-white text-sm font-medium rounded-lg opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 pointer-events-none whitespace-nowrap">
+                        Create Event
+                        <div className="absolute top-full right-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-black/90"></div>
+                    </div>
+                    
+                    {/* Main Button */}
                 <button
                     onClick={() => setShowCreateModal(true)}
-                    className="fixed bottom-6 right-6 z-[9000] px-5 py-3 rounded-2xl bg-indigo-600 text-white shadow-2xl hover:bg-indigo-700 text-sm font-semibold"
+                        className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-xl hover:shadow-2xl flex items-center justify-center transition-all duration-300 transform hover:scale-105 active:scale-95 group-hover:from-blue-600 group-hover:to-blue-700 border border-blue-400/20"
                     title="Create Event"
                 >
-                    Create Event
+                        {/* Background glow effect */}
+                        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-blue-400/20 to-blue-600/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                        
+                        {/* Plus Icon */}
+                        <svg 
+                            width="24px" 
+                            height="24px" 
+                            viewBox="0 0 24 24" 
+                            fill="none" 
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="relative z-10 transition-transform duration-300 group-hover:rotate-90"
+                        >
+                            <path 
+                                d="M12 5V19M5 12H19" 
+                                stroke="currentColor" 
+                                strokeWidth="2.5" 
+                                strokeLinecap="round" 
+                                strokeLinejoin="round"
+                            />
+                        </svg>
+                        
+                        {/* Ripple effect on click */}
+                        <div className="absolute inset-0 rounded-2xl bg-white/20 scale-0 group-active:scale-100 transition-transform duration-150"></div>
                 </button>
+                </div>
             )}
 
             {/* Organization Details Modal */}
@@ -933,8 +1396,67 @@ export default function MediaPage({ keycloak }) {
             )}
 
             {message && (
-                <div className={`max-w-7xl mx-auto mb-6 ${message.includes('✅') ? 'text-green-700' : 'text-red-700'}`}>{message}</div>
+                <div className={`max-w-7xl mx-auto mb-6 px-8 ${message.includes('✅') ? 'text-green-400' : 'text-red-400'}`}>{message}</div>
             )}
         </div>
     );
+}
+
+// Lightweight component to attach to socket events and keep local state in sync
+function SeatRealtime({ eventId, socketRef, seatSelect, setSeatSelect, holdTimersRef }) {
+    useEffect(() => {
+        const sock = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000', {
+            transports: ['websocket'],
+        });
+        socketRef.current = sock;
+        sock.emit('seats:join', { eventId });
+
+        const onSnapshot = ({ eventId: eid, held }) => {
+            if (eid !== eventId) return;
+            setSeatSelect(prev => ({
+                ...prev,
+                // Overwrite held state from snapshot for all seats so viewers stay in sync
+                seats: prev.seats.map(s => ({ ...s, held: held.includes(s.seat_no) }))
+            }));
+        };
+        const onHeld = ({ eventId: eid, seatNo }) => {
+            if (eid !== eventId) return;
+            setSeatSelect(prev => ({
+                ...prev,
+                seats: prev.seats.map(s => s.seat_no === seatNo ? { ...s, held: true } : s)
+            }));
+        };
+        const onReleased = ({ eventId: eid, seatNo }) => {
+            if (eid !== eventId) return;
+            setSeatSelect(prev => ({
+                ...prev,
+                seats: prev.seats.map(s => s.seat_no === seatNo ? { ...s, held: false, selected: false } : s)
+            }));
+        };
+
+        sock.on('seats:snapshot', onSnapshot);
+        sock.on('seat:held', onHeld);
+        sock.on('seat:released', onReleased);
+
+        // Periodic reconciliation to reflect TTL expiries even if no release event fires
+        const reconcileId = setInterval(() => {
+            try { sock.emit('seats:snapshot:request', { eventId }); } catch {}
+        }, 3000);
+
+        return () => {
+            try {
+                // clear local timers
+                for (const id of holdTimersRef.current.values()) clearInterval(id);
+                holdTimersRef.current.clear();
+            } catch {}
+            clearInterval(reconcileId);
+            sock.off('seats:snapshot', onSnapshot);
+            sock.off('seat:held', onHeld);
+            sock.off('seat:released', onReleased);
+            sock.disconnect();
+            socketRef.current = null;
+        };
+    }, [eventId]);
+
+    return null;
 }

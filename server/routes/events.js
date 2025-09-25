@@ -63,14 +63,30 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// Seat map for an event: returns { total, taken: [seat_no,...] }
+// Seat map for an event: returns { total, taken: [seat_no,...], held: [seat_no,...] }
 router.get('/:id/seats', async (req, res) => {
     try {
-        const { rows: evRows } = await pool.query('SELECT id, total_slots FROM eventify_events WHERE id=$1', [req.params.id]);
+        const eventId = req.params.id;
+        const { rows: evRows } = await pool.query('SELECT id, total_slots FROM eventify_events WHERE id=$1', [eventId]);
         if (!evRows[0]) return res.status(404).json({ error: 'Not found' });
         const total = Number(evRows[0].total_slots);
-        const { rows } = await pool.query("SELECT seat_no FROM eventify_booking_seats WHERE event_id=$1 AND status='booked' ORDER BY seat_no", [req.params.id]);
-        res.json({ total, taken: rows.map(r => Number(r.seat_no)) });
+
+        const { rows } = await pool.query("SELECT seat_no FROM eventify_booking_seats WHERE event_id=$1 AND status='booked' ORDER BY seat_no", [eventId]);
+        const taken = rows.map(r => Number(r.seat_no));
+
+        // read currently held seats from Redis ephemeral set
+        let held = [];
+        try {
+            const redis = getRedis();
+            const setKey = `event:${eventId}:holds`;
+            const exists = await redis.exists(setKey);
+            if (exists) {
+                const members = await redis.smembers(setKey);
+                held = members.map(v => Number(v));
+            }
+        } catch { /* best-effort only */ }
+
+        res.json({ total, taken, held });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -79,28 +95,48 @@ router.get('/:id/seats', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const { name, description, category, event_date, total_slots } = req.body || {};
-        const { rows } = await pool.query(
+        const eventId = req.params.id;
+
+        // Update basic fields including total_slots if provided
+        const { rows: updatedRows } = await pool.query(
             `UPDATE eventify_events SET 
         name = COALESCE($2,name),
         description = COALESCE($3,description),
         category = COALESCE($4,category),
         event_date = COALESCE($5,event_date),
         total_slots = COALESCE($6,total_slots),
-        available_slots = CASE WHEN $6 IS NOT NULL THEN $6 ELSE available_slots END,
         updated_at = NOW()
        WHERE id=$1 RETURNING *`,
-            [req.params.id, name, description, category, event_date, total_slots]
+            [eventId, name, description, category, event_date, total_slots]
         );
 
-        if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+        if (!updatedRows[0]) return res.status(404).json({ error: 'Not found' });
 
+        let event = updatedRows[0];
+        // If total_slots changed, recompute available_slots = max(total_slots - booked_count, 0)
         if (typeof total_slots === 'number') {
+            const { rows: bookedCountRows } = await pool.query(
+                `SELECT COUNT(*)::int AS booked_count 
+                 FROM eventify_booking_seats 
+                 WHERE event_id=$1 AND status='booked'`,
+                [eventId]
+            );
+            const bookedCount = Number(bookedCountRows?.[0]?.booked_count || 0);
+            const newAvailable = Math.max(0, Number(total_slots) - bookedCount);
+            const { rows: afterAvail } = await pool.query(
+                `UPDATE eventify_events SET available_slots=$2, updated_at=NOW() WHERE id=$1 RETURNING *`,
+                [eventId, newAvailable]
+            );
+            event = afterAvail[0] || event;
+
+            // Mirror Redis visible counter to DB available_slots
             try {
                 const redis = getRedis();
-                await redis.set(`event:${rows[0].id}:slots`, total_slots);
-            } catch { }
+                await redis.set(`event:${eventId}:slots`, String(newAvailable));
+            } catch { /* non-fatal */ }
         }
-        res.json(rows[0]);
+
+        res.json(event);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

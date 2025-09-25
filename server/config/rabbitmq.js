@@ -1,6 +1,6 @@
 const amqplib = require('amqplib');
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://happening:happening@rabbitmq:5672';
+const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://eventify:eventify@rabbitmq:5672';
 
 let connectionPromise;
 

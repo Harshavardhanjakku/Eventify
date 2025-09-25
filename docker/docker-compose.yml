@@ -38,7 +38,7 @@ services:
     networks:
       - eventify_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U happeninguser -d happeningdb"]
+      test: ["CMD-SHELL", "pg_isready -U eventifyuser -d eventifydb"]
       interval: 10s
       timeout: 5s
       retries: 5
