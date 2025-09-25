@@ -4,16 +4,17 @@ import { useRouter } from "next/router";
 import API from '../lib/api';
 import InviteToOrgButton from "../components/InviteToOrgButton";
 import InvitationsButton from "../components/InvitationsButton";
+import OrganizationSwitcher from "./OrganizationSwitcher";
+import Breadcrumb from "./Breadcrumb";
+import { useOrganization } from '../contexts/OrganizationContext';
 
 export default function Navbar({ keycloak }) {
   const router = useRouter();
   const [pendingInvites, setPendingInvites] = useState([]);
   const [showProfile, setShowProfile] = useState(false);
-  const [orgs, setOrgs] = useState([]);
   const [currentUserId, setCurrentUserId] = useState(null);
   const profileRef = useRef(null);
-  const [showOrgs, setShowOrgs] = useState(false);
-  const orgsHoverTimer = useRef(null);
+  const { loadOrganizations, currentOrganization } = useOrganization();
 
   const links = [];
 
@@ -51,44 +52,12 @@ export default function Navbar({ keycloak }) {
     return () => window.removeEventListener('refreshInvites', handleRefreshInvites);
   }, [keycloak?.authenticated, keycloak?.tokenParsed?.sub]);
 
-  // Load current user and their organizations for dropdown + respond to refresh events
+  // Load organizations when user changes
   useEffect(() => {
-    const loadUserAndOrgs = async () => {
-      if (!keycloak?.authenticated || !keycloak?.tokenParsed?.sub) return;
-      try {
-        // Ensure we always resolve latest user id
-        let uid = currentUserId;
-        if (!uid) {
-          const userRes = await API.get(`/users?keycloak_id=${keycloak.tokenParsed.sub}`);
-          if (userRes.data?.length) {
-            uid = userRes.data[0].id;
-            setCurrentUserId(uid);
-          }
-        }
-        if (!uid) return;
-        const orgRes = await API.get(`/organizations/user/${uid}`);
-        setOrgs(Array.isArray(orgRes.data) ? orgRes.data : []);
-      } catch (e) {
-        console.error('Failed to load organizations for navbar:', e);
-        setOrgs([]);
-      }
-    };
-
-    // initial load
-    loadUserAndOrgs();
-
-    // listen for external refresh events (e.g., after accepting an invite)
-    const handleRefreshOrgs = () => {
-      loadUserAndOrgs();
-    };
-    window.addEventListener('refreshOrgs', handleRefreshOrgs);
-    return () => window.removeEventListener('refreshOrgs', handleRefreshOrgs);
-  }, [keycloak?.authenticated, keycloak?.tokenParsed?.sub, currentUserId]);
-
-  const handleSwitchToOrg = (org) => {
-    if (!org?.id) return;
-    router.push(`/switch/${org.id}`);
-  };
+    if (keycloak?.authenticated && keycloak?.tokenParsed?.sub && currentUserId) {
+      loadOrganizations(currentUserId);
+    }
+  }, [keycloak?.authenticated, currentUserId, loadOrganizations]);
 
   // Close profile on outside click or route change
   useEffect(() => {
@@ -107,21 +76,17 @@ export default function Navbar({ keycloak }) {
     };
   }, [showProfile, router.events]);
 
-  // Ensure orgs dropdown closes on route change or outside click
+  // Listen for organization switch events
   useEffect(() => {
-    if (!showOrgs) return;
-    const close = () => setShowOrgs(false);
-    router.events.on('routeChangeStart', close);
-    const handleDocClick = (e) => {
-      // If click is far away from the container, close. We rely on mouseleave too; this is extra safety
-      // No specific ref for container since mouseleave covers most cases
+    const handleOrgSwitch = () => {
+      // Refresh data when organization switches
+      if (currentUserId) {
+        loadOrganizations(currentUserId, true);
+      }
     };
-    document.addEventListener('mousedown', handleDocClick);
-    return () => {
-      router.events.off('routeChangeStart', close);
-      document.removeEventListener('mousedown', handleDocClick);
-    };
-  }, [showOrgs, router.events]);
+    window.addEventListener('organizationSwitched', handleOrgSwitch);
+    return () => window.removeEventListener('organizationSwitched', handleOrgSwitch);
+  }, [currentUserId, loadOrganizations]);
 
   const handleAcceptInvite = async (inviteId) => {
     try {
@@ -169,104 +134,7 @@ export default function Navbar({ keycloak }) {
           <div className="flex items-center space-x-3">
             {keycloak?.authenticated && (
               <>
-                {/* Organizations dropdown with stable hover */}
-                <div
-                  className="relative"
-                  onMouseEnter={() => {
-                    if (orgsHoverTimer.current) {
-                      clearTimeout(orgsHoverTimer.current);
-                      orgsHoverTimer.current = null;
-                    }
-                    setShowOrgs(true);
-                  }}
-                  onMouseLeave={() => {
-                    // Delay closing slightly to allow cursor to move into panel
-                    if (orgsHoverTimer.current) clearTimeout(orgsHoverTimer.current);
-                    orgsHoverTimer.current = setTimeout(() => setShowOrgs(false), 200);
-                  }}
-                >
-                  <button className="px-4 py-2 rounded-xl bg-black/60 border border-white/15 hover:border-white/25 text-white/90 text-sm font-semibold shadow-sm hover:shadow transition flex items-center gap-1">
-                    <span>Organizations</span>
-                    <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                  </button>
-
-                  {/* Dropdown panel */}
-                  {showOrgs && (
-                    <div
-                      className="absolute left-0 top-full mt-1 w-80 bg-black/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/10 z-[9999] p-3"
-                      onMouseEnter={() => {
-                        if (orgsHoverTimer.current) {
-                          clearTimeout(orgsHoverTimer.current);
-                          orgsHoverTimer.current = null;
-                        }
-                      }}
-                      onMouseLeave={() => {
-                        if (orgsHoverTimer.current) clearTimeout(orgsHoverTimer.current);
-                        orgsHoverTimer.current = setTimeout(() => setShowOrgs(false), 200);
-                      }}
-                    >
-                      {(() => {
-                        const toLower = (v) => String(v || '').toLowerCase();
-                        const managedOrgs = orgs.filter(o => {
-                          const r = toLower(o.role);
-                          return r === 'orgadmin' || r === 'owner';
-                        });
-                        const memberOrgs = orgs.filter(o => {
-                          const r = toLower(o.role);
-                          return !(r === 'orgadmin' || r === 'owner');
-                        });
-
-                        const renderRoleLabel = (role) => {
-                          const r = toLower(role);
-                          if (r === 'organizer') return 'Organizer';
-                          if (r === 'agent') return 'Agent';
-                          if (r === 'customer' || r === 'viewer') return 'Customer';
-                          if (r === 'user') return 'User';
-                          if (r === 'owner' || r === 'orgadmin') return 'OrgAdmin';
-                          return role;
-                        };
-
-                        return (
-                          <>
-                            <div className="mb-2">
-                              <div className="text-xs text-white/60 px-2 pb-1">You manage</div>
-                              {managedOrgs.length > 0 ? (
-                                managedOrgs.map(org => (
-                                  <div key={`${org.id}-admin`} className="flex items-center justify-between p-3 rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5 mb-2">
-                                    <div>
-                                      <div className="text-sm font-semibold text-white truncate max-w-[12rem]">{org.name}</div>
-                                      <div className="text-xs text-white/60">Role: OrgAdmin</div>
-                                    </div>
-                                    {/* Switch action hidden for OrgAdmin-managed orgs */}
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="px-2 py-3 text-xs text-white/60">No organizations to manage</div>
-                              )}
-                            </div>
-
-                            <div className="mt-2">
-                              <div className="text-xs text-white/60 px-2 pb-1">You work in</div>
-                              {memberOrgs.length > 0 ? (
-                                memberOrgs.map(org => (
-                                  <div key={`${org.id}-member`} className="flex items-center justify-between p-3 rounded-xl border border-white/10 hover:border-white/20 hover:bg-white/5 mb-2">
-                                    <div>
-                                      <div className="text-sm font-semibold text-white truncate max-w-[12rem]">{org.name}</div>
-                                      <div className="text-xs text-white/60">Role: {renderRoleLabel(org.role)}</div>
-                                    </div>
-                                    <button onClick={() => handleSwitchToOrg(org)} className="px-3 py-1.5 text-xs rounded-lg border border-white/20 text-white hover:bg-white/10 font-semibold">Switch</button>
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="px-2 py-3 text-xs text-white/60">No organizations joined</div>
-                              )}
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  )}
-                </div>
+                <OrganizationSwitcher />
                 <InviteToOrgButton keycloak={keycloak} />
                 <InvitationsButton keycloak={keycloak} iconOnly />
               </>
@@ -312,6 +180,15 @@ export default function Navbar({ keycloak }) {
           </div>
         </div>
       </div>
+
+      {/* Breadcrumb */}
+      {keycloak?.authenticated && currentOrganization && (
+        <div className="border-t border-white/10 bg-black/50 backdrop-blur-sm">
+          <div className="max-w-7xl mx-auto px-6 lg:px-8 py-3">
+            <Breadcrumb />
+          </div>
+        </div>
+      )}
     </nav>
   );
 }

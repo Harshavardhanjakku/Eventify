@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import "../styles/globals.css";
 import Navbar from "../components/Navbar";
 import keycloak from "../lib/keycloak";
+import { OrganizationProvider } from '../contexts/OrganizationContext';
 
 export default function MyApp({ Component, pageProps }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -59,9 +60,11 @@ export default function MyApp({ Component, pageProps }) {
   }
 
   return (
-    <div>
-      <Navbar keycloak={keycloak} />
-      <Component {...pageProps} keycloak={keycloak} />
-    </div>
+    <OrganizationProvider keycloak={keycloak}>
+      <div>
+        <Navbar keycloak={keycloak} />
+        <Component {...pageProps} keycloak={keycloak} />
+      </div>
+    </OrganizationProvider>
   );
 }

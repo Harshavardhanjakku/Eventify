@@ -3,12 +3,21 @@ import { io } from "socket.io-client";
 import API from "../lib/api";
 import InvitationsButton from "../components/InvitationsButton";
 import { useRouter } from "next/router";
+import { useOrganization } from "../contexts/OrganizationContext";
 
 export default function MediaPage({ keycloak }) {
     const [events, setEvents] = useState([]);
-    const [organizations, setOrganizations] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [switchingOrg, setSwitchingOrg] = useState(false);
     const [currentUserId, setCurrentUserId] = useState(null);
+    const { 
+        organizations, 
+        currentOrganization, 
+        loadOrganizations, 
+        switchToOrganization,
+        loading: orgLoading,
+        error: orgError 
+    } = useOrganization();
     // Booking flow now happens via the View → seat selection modal only
     const [bookingLoading, setBookingLoading] = useState(false);
     const [message, setMessage] = useState("");
@@ -57,22 +66,19 @@ export default function MediaPage({ keycloak }) {
 
     const toLower = (v) => String(v || '').toLowerCase();
     const userOrgIdsForBooking = useMemo(() => {
-        const ids = new Set();
-        for (const o of organizations) {
-            const r = toLower(o.role);
-            if (r === 'user' || r === 'customer' || r === 'viewer') ids.add(o.id);
-        }
-        return ids;
-    }, [organizations]);
+        if (!currentOrganization) return new Set();
+        
+        // Only show events from current organization
+        return new Set([currentOrganization.id]);
+    }, [currentOrganization]);
 
     const organizerOrgIds = useMemo(() => {
-        const ids = new Set();
-        for (const o of organizations) {
-            const r = toLower(o.role);
-            if (r === 'organizer') ids.add(o.id);
-        }
-        return ids;
-    }, [organizations]);
+        if (!currentOrganization) return new Set();
+        
+        // Only show events from current organization if user has organizer role
+        const hasOrganizerRole = ['owner', 'orgadmin', 'organizer'].includes(currentOrganization.role?.toLowerCase());
+        return hasOrganizerRole ? new Set([currentOrganization.id]) : new Set();
+    }, [currentOrganization]);
 
     const switchOrgRole = useMemo(() => {
         if (!isSwitchView) return null;
@@ -123,15 +129,7 @@ export default function MediaPage({ keycloak }) {
         }
     };
 
-    const fetchOrganizationsForUser = async (userId) => {
-        try {
-            const res = await API.get(`/organizations/user/${userId}`);
-            setOrganizations(Array.isArray(res.data) ? res.data : []);
-        } catch (err) {
-            console.error("Error fetching organizations for user", err);
-            setOrganizations([]);
-        }
-    };
+    // Remove fetchOrganizationsForUser - now handled by context
 
     const fetchMyBookings = async (userId) => {
         if (!userId) return setMyBookings([]);
@@ -168,10 +166,9 @@ export default function MediaPage({ keycloak }) {
                 const uid = userData?.id || null;
                 setCurrentUserId(uid);
                 if (uid) {
-                    await Promise.all([
-                        fetchOrganizationsForUser(uid),
-                        fetchMyBookings(uid)
-                    ]);
+                    // Load organizations through context
+                    await loadOrganizations(uid);
+                    await fetchMyBookings(uid);
                 }
                 await fetchEvents();
             } finally {
@@ -179,7 +176,27 @@ export default function MediaPage({ keycloak }) {
             }
         };
         init();
-    }, [keycloak?.authenticated]);
+    }, [keycloak?.authenticated, loadOrganizations]);
+
+    // Listen for organization switches and refresh data
+    useEffect(() => {
+        const handleOrgSwitch = async () => {
+            if (currentUserId && currentOrganization) {
+                setSwitchingOrg(true);
+                try {
+                    await Promise.all([
+                        fetchEvents(),
+                        fetchMyBookings(currentUserId)
+                    ]);
+                } finally {
+                    setSwitchingOrg(false);
+                }
+            }
+        };
+
+        window.addEventListener('organizationSwitched', handleOrgSwitch);
+        return () => window.removeEventListener('organizationSwitched', handleOrgSwitch);
+    }, [currentUserId, currentOrganization]);
 
     // Direct booking button removed; booking is handled inside the seat selection modal
 
@@ -195,12 +212,14 @@ export default function MediaPage({ keycloak }) {
         );
     }
 
-    if (loading) {
+    if (loading || orgLoading) {
         return (
             <div className="min-h-screen bg-black flex items-center justify-center">
                 <div className="text-center">
                     <div className="w-16 h-16 border-4 border-white/20 border-t-cyan-300 rounded-full animate-spin mb-6 shadow-2xl"></div>
-                    <p className="text-white text-xl font-semibold tracking-wide">Loading...</p>
+                    <p className="text-white text-xl font-semibold tracking-wide">
+                        {orgLoading ? 'Loading organizations...' : 'Loading...'}
+                    </p>
                 </div>
             </div>
         );
@@ -208,6 +227,20 @@ export default function MediaPage({ keycloak }) {
 
     return (
         <div className="min-h-screen bg-black text-white p-6">
+            {/* Organization Switching Indicator */}
+            {switchingOrg && (
+                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50">
+                    <div className="bg-gradient-to-r from-cyan-500/20 to-blue-500/20 backdrop-blur-xl border border-cyan-400/30 rounded-2xl px-6 py-3 shadow-2xl">
+                        <div className="flex items-center gap-3">
+                            <div className="w-5 h-5 border-2 border-white/20 border-t-cyan-300 rounded-full animate-spin"></div>
+                            <span className="text-sm font-medium text-white">
+                                Switching to {currentOrganization?.name}...
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="pt-12 px-8 pb-4">
                 <div className="max-w-7xl mx-auto">
                     <div className="mb-12">
@@ -225,6 +258,50 @@ export default function MediaPage({ keycloak }) {
                 </div>
             </div>
 
+            {/* Current Organization Indicator */}
+            {currentOrganization && (
+                <div className="px-8 pb-4">
+                    <div className="max-w-7xl mx-auto">
+                        <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 backdrop-blur-xl border border-cyan-400/20 rounded-2xl p-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center">
+                                    <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div className="text-white font-semibold text-sm">
+                                        Currently viewing: {currentOrganization.name}
+                                    </div>
+                                    <div className="text-cyan-300 text-xs font-medium">
+                                        {currentOrganization.role?.charAt(0).toUpperCase() + currentOrganization.role?.slice(1)} • {currentOrganization.member_count || 0} members
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Organization Error Message */}
+            {orgError && (
+                <div className="px-8 pb-4">
+                    <div className="max-w-7xl mx-auto">
+                        <div className="p-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-300 text-sm">
+                            <div className="flex items-center justify-between">
+                                <span>{orgError}</span>
+                                <button
+                                    onClick={() => loadOrganizations(currentUserId, true)}
+                                    className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-xs font-medium transition-colors"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Organizations Section */}
             <div className="px-8 pb-12">
                 <div className="max-w-7xl mx-auto">
@@ -232,6 +309,11 @@ export default function MediaPage({ keycloak }) {
                         <div className="flex items-center gap-6">
                             <h2 className="text-2xl font-bold text-white tracking-wide">Your Organizations</h2>
                             <div className="text-sm text-white/60">{organizations.length} organizations</div>
+                            {currentOrganization && (
+                                <div className="text-sm text-cyan-300">
+                                    Currently viewing: <span className="font-semibold">{currentOrganization.name}</span>
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -250,15 +332,25 @@ export default function MediaPage({ keycloak }) {
                                 const isAdmin = role === 'orgadmin' || role === 'owner';
                                 const isOrganizer = role === 'organizer';
                                 const isUser = role === 'user' || role === 'customer' || role === 'viewer';
+                                const isCurrent = currentOrganization?.id === org.id;
                                 
                                 return (
-                                    <div key={org.id} className="group relative rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl p-6 hover:bg-white/10 transition-all duration-300">
+                                    <div key={org.id} className={`group relative rounded-2xl border backdrop-blur-xl shadow-2xl p-6 transition-all duration-300 ${
+                                        isCurrent 
+                                            ? 'border-cyan-400/50 bg-cyan-500/10 hover:bg-cyan-500/15' 
+                                            : 'border-white/10 bg-white/5 hover:bg-white/10'
+                                    }`}>
                                         {/* Role indicator bar */}
                                         <div className={`absolute left-0 top-0 h-full w-1 rounded-l-2xl ${
                                             isAdmin ? 'bg-gradient-to-b from-purple-500 to-indigo-500' :
                                             isOrganizer ? 'bg-gradient-to-b from-blue-500 to-cyan-500' :
                                             'bg-gradient-to-b from-emerald-500 to-teal-500'
                                         }`}></div>
+                                        
+                                        {/* Current organization indicator */}
+                                        {isCurrent && (
+                                            <div className="absolute top-4 right-4 w-3 h-3 bg-cyan-400 rounded-full animate-pulse"></div>
+                                        )}
                                         
                                         <div className="flex items-start justify-between mb-4">
                                             <div className="flex-1">
@@ -317,6 +409,14 @@ export default function MediaPage({ keycloak }) {
                                             >
                                                 View Details
                                             </button>
+                                            {!isCurrent && (
+                                                <button 
+                                                    onClick={() => switchToOrganization(org)}
+                                                    className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl text-sm font-semibold transition-all duration-300"
+                                                >
+                                                    Switch
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                 );
@@ -581,11 +681,11 @@ export default function MediaPage({ keycloak }) {
                             <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Organization *</label>
                                 {isSwitchView ? (
-                                            <select value={newEvent.org_id || String(switchOrgId || '')} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} disabled className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white/60">
+                                            <select value={newEvent.org_id || String(switchOrgId || '')} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} disabled className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white/60 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300">
                                         <option value={String(switchOrgId || '')}>{organizations.find(o => String(o.id) === String(switchOrgId))?.name || 'Selected organization'}</option>
                                     </select>
                                 ) : (
-                                            <select value={newEvent.org_id} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
+                                            <select value={newEvent.org_id} onChange={(e) => setNewEvent({ ...newEvent, org_id: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300">
                                         <option value="">Select organization</option>
                                         {organizations.filter(o => String(o.role).toLowerCase() === 'organizer').map(o => (
                                             <option key={o.id} value={o.id}>{o.name}</option>
@@ -595,12 +695,12 @@ export default function MediaPage({ keycloak }) {
                             </div>
                             <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Event Name *</label>
-                                        <input value={newEvent.name} onChange={(e) => setNewEvent({ ...newEvent, name: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Enter event name" />
+                                        <input value={newEvent.name} onChange={(e) => setNewEvent({ ...newEvent, name: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="Enter event name" />
                             </div>
                             </div>
                             <div>
                                     <label className="block text-sm font-medium text-white/80 mb-2">Description</label>
-                                    <textarea value={newEvent.description} onChange={(e) => setNewEvent({ ...newEvent, description: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" rows={3} placeholder="Describe your event..." />
+                                    <textarea value={newEvent.description} onChange={(e) => setNewEvent({ ...newEvent, description: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" rows={3} placeholder="Describe your event..." />
                                 </div>
                             </div>
 
@@ -613,7 +713,7 @@ export default function MediaPage({ keycloak }) {
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Category</label>
-                                        <select value={newEvent.category} onChange={(e) => setNewEvent({ ...newEvent, category: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
+                                        <select value={newEvent.category} onChange={(e) => setNewEvent({ ...newEvent, category: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300">
                                     <option value="webinar">Webinar</option>
                                             <option value="conference">Conference</option>
                                             <option value="workshop">Workshop</option>
@@ -626,7 +726,7 @@ export default function MediaPage({ keycloak }) {
                             </div>
                             <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Event Type</label>
-                                        <select value={newEvent.event_type} onChange={(e) => setNewEvent({ ...newEvent, event_type: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20">
+                                        <select value={newEvent.event_type} onChange={(e) => setNewEvent({ ...newEvent, event_type: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300">
                                             <option value="online">Online</option>
                                             <option value="offline">Offline</option>
                                             <option value="hybrid">Hybrid</option>
@@ -634,17 +734,17 @@ export default function MediaPage({ keycloak }) {
                             </div>
                             <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Duration (minutes)</label>
-                                        <input type="number" min={15} step={15} value={newEvent.duration} onChange={(e) => setNewEvent({ ...newEvent, duration: Number(e.target.value) || 60 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="60" />
+                                        <input type="number" min={15} step={15} value={newEvent.duration} onChange={(e) => setNewEvent({ ...newEvent, duration: Number(e.target.value) || 60 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="60" />
                             </div>
                         </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Event Date & Time *</label>
-                                        <input type="datetime-local" value={newEvent.event_date} onChange={(e) => setNewEvent({ ...newEvent, event_date: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                        <input type="datetime-local" value={newEvent.event_date} onChange={(e) => setNewEvent({ ...newEvent, event_date: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Location</label>
-                                        <input value={newEvent.location} onChange={(e) => setNewEvent({ ...newEvent, location: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Event location or online link" />
+                                        <input value={newEvent.location} onChange={(e) => setNewEvent({ ...newEvent, location: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="Event location or online link" />
                                     </div>
                                 </div>
                             </div>
@@ -658,15 +758,15 @@ export default function MediaPage({ keycloak }) {
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Total Slots</label>
-                                        <input type="number" min={1} value={newEvent.total_slots} onChange={(e) => setNewEvent({ ...newEvent, total_slots: Math.max(1, Number(e.target.value) || 1) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                        <input type="number" min={1} value={newEvent.total_slots} onChange={(e) => setNewEvent({ ...newEvent, total_slots: Math.max(1, Number(e.target.value) || 1) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Max Attendees</label>
-                                        <input type="number" min={1} value={newEvent.max_attendees} onChange={(e) => setNewEvent({ ...newEvent, max_attendees: Math.max(1, Number(e.target.value) || 100) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" />
+                                        <input type="number" min={1} value={newEvent.max_attendees} onChange={(e) => setNewEvent({ ...newEvent, max_attendees: Math.max(1, Number(e.target.value) || 100) })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Price ($)</label>
-                                        <input type="number" min={0} step={0.01} value={newEvent.price} onChange={(e) => setNewEvent({ ...newEvent, price: Number(e.target.value) || 0 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="0.00" />
+                                        <input type="number" min={0} step={0.01} value={newEvent.price} onChange={(e) => setNewEvent({ ...newEvent, price: Number(e.target.value) || 0 })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="0.00" />
                                     </div>
                                 </div>
                             </div>
@@ -680,21 +780,21 @@ export default function MediaPage({ keycloak }) {
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Tags</label>
-                                        <input value={newEvent.tags} onChange={(e) => setNewEvent({ ...newEvent, tags: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="tech, workshop, free (comma separated)" />
+                                        <input value={newEvent.tags} onChange={(e) => setNewEvent({ ...newEvent, tags: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="tech, workshop, free (comma separated)" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Requirements</label>
-                                        <input value={newEvent.requirements} onChange={(e) => setNewEvent({ ...newEvent, requirements: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="Laptop, internet connection, etc." />
+                                        <input value={newEvent.requirements} onChange={(e) => setNewEvent({ ...newEvent, requirements: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="Laptop, internet connection, etc." />
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Contact Email</label>
-                                        <input type="email" value={newEvent.contact_email} onChange={(e) => setNewEvent({ ...newEvent, contact_email: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="contact@example.com" />
+                                        <input type="email" value={newEvent.contact_email} onChange={(e) => setNewEvent({ ...newEvent, contact_email: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="contact@example.com" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-white/80 mb-2">Contact Phone</label>
-                                        <input type="tel" value={newEvent.contact_phone} onChange={(e) => setNewEvent({ ...newEvent, contact_phone: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20" placeholder="+1 (555) 123-4567" />
+                                        <input type="tel" value={newEvent.contact_phone} onChange={(e) => setNewEvent({ ...newEvent, contact_phone: e.target.value })} className="w-full border border-white/20 rounded-xl px-4 py-3 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" placeholder="+1 (555) 123-4567" />
                                     </div>
                                 </div>
                             </div>
@@ -802,7 +902,7 @@ export default function MediaPage({ keycloak }) {
                             </div>
                             <div>
                                 <label className="block text-sm text-white/60 mb-1">Description</label>
-                                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full border border-white/20 rounded-lg px-3 py-2 text-sm bg-white/5 text-white placeholder-white/50" rows={4} placeholder="Event description" />
+                                <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full border border-white/20 rounded-lg px-3 py-2 text-sm bg-white/5 text-white placeholder-white/50 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20 outline-none transition-all duration-300" rows={4} placeholder="Event description" />
                             </div>
                         </div>
                         <div className="mt-5 flex justify-end gap-2">
@@ -1264,8 +1364,10 @@ export default function MediaPage({ keycloak }) {
                         {/* Modal Header */}
                         <div className="flex items-center justify-between p-6 border-b border-white/10">
                             <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center font-bold">
-                                    {selectedOrg.name?.[0]?.toUpperCase()}
+                                <div className="w-10 h-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center">
+                                    <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 4h12M6 4v16M6 4H5m13 0v16m0-16h1m-1 16H6m12 0h1M6 20H5M9 7h1v1H9V7Zm5 0h1v1h-1V7Zm-5 4h1v1H9v-1Zm5 0h1v1h-1v-1Zm-3 4h2a1 1 0 0 1 1 1v4h-4v-4a1 1 0 0 1 1-1Z"/>
+                                    </svg>
                                 </div>
                                 <div>
                                     <h2 className="text-xl font-extrabold text-white">{selectedOrg.name}</h2>
