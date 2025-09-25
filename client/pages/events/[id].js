@@ -124,10 +124,15 @@ export default function EventSeatPage() {
                             </div>
                         </div>
                     ) : (
-                        <div className="p-3 rounded-xl border border-white/10 bg-white/5 text-white/80 text-sm flex items-center gap-3">
-                            <span className="font-medium">Hurry up! Limited slots left</span>
-                            <span className="px-2 py-0.5 rounded-lg bg-cyan-300/15 text-cyan-300 border border-cyan-300/30 text-xs">{eventData.available_slots}</span>
-                        </div>
+                        (() => {
+                            const left = Array.isArray(seatsState?.seats) ? seatsState.seats.filter(s => !s.taken && !s.held).length : Number(eventData.available_slots || 0);
+                            return (
+                                <div className="p-3 rounded-xl border border-white/10 bg-white/5 text-white/80 text-sm flex items-center gap-3">
+                                    <span className="font-medium">Hurry up! Limited slots left</span>
+                                    <span className="px-2 py-0.5 rounded-lg bg-cyan-300/15 text-cyan-300 border border-cyan-300/30 text-xs">{left}</span>
+                                </div>
+                            );
+                        })()
                     )}
                 </div>
 
