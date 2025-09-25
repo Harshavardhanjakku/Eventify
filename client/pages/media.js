@@ -374,18 +374,7 @@ export default function MediaPage({ keycloak }) {
                                                 <span>Available: {ev.available_slots}</span>
                                             </div>
                                             <div className="mt-4 flex items-center gap-2">
-                                                <button onClick={async () => {
-                                                    try {
-                                                        const res = await API.get(`/events/${ev.id}/seats`);
-                                                        const { total, taken } = res.data || { total: ev.total_slots, taken: [] };
-                                                        // Build seat grid metadata
-                                            const seats = Array.from({ length: total }, (_, i) => ({ seat_no: i + 1, taken: taken?.includes(i + 1), held: false, selected: false }));
-                                                        setSeatSelect({ event: ev, seats, max: Math.max(0, Number(ev.available_slots) || 0) });
-                                                        setShowSeatSelect(true);
-                                                    } catch (e) {
-                                                        setMessage('❌ Failed to load seats: ' + (e.response?.data?.error || e.message));
-                                                    }
-                                                }} className="px-3 py-2 bg-white/10 text-white hover:bg-white/15 border border-white/15 rounded-xl text-sm font-semibold">Book</button>
+                                                <button onClick={() => router.push(`/events/${ev.id}`)} className="px-3 py-2 bg-white/10 text-white hover:bg-white/15 border border-white/15 rounded-xl text-sm font-semibold">Book</button>
                                             </div>
                                         </div>
                                     ))}
@@ -864,6 +853,35 @@ export default function MediaPage({ keycloak }) {
 
                         {/* Content */}
                         <div className="p-6">
+                            {/* Urgency banner with global countdown and limited slots */}
+                            <div className="mb-4">
+                                {(() => {
+                                    try {
+                                        const selected = Array.isArray(seatSelect?.seats) ? seatSelect.seats.filter(s => s.selected && typeof s._countdown === 'number') : [];
+                                        if (selected.length > 0) {
+                                            const remaining = Math.max(0, Math.min(...selected.map(s => s._countdown)));
+                                            const pct = Math.max(0, Math.min(100, (remaining / 10) * 100));
+                                            return (
+                                                <div className="p-3 rounded-xl border border-yellow-400/30 bg-yellow-400/10 text-yellow-300 text-sm flex items-center gap-4">
+                                                    <span className="font-medium">Your selection is on hold. Hurry up — confirm within <span className="font-bold">{remaining}s</span>.</span>
+                                                    <div className="ml-auto w-40 h-2 bg-white/10 rounded-full overflow-hidden">
+                                                        <div style={{ width: `${pct}%` }} className="h-2 bg-yellow-400"></div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                        const left = Number(seatSelect?.event?.available_slots ?? 0);
+                                        return (
+                                            <div className="p-3 rounded-xl border border-white/10 bg-white/5 text-white/80 text-sm flex items-center gap-3">
+                                                <span className="font-medium">Hurry up! Limited slots left</span>
+                                                <span className="px-2 py-0.5 rounded-lg bg-cyan-300/15 text-cyan-300 border border-cyan-300/30 text-xs">{left}</span>
+                                            </div>
+                                        );
+                                    } catch {
+                                        return null;
+                                    }
+                                })()}
+                            </div>
                             <div className="mb-6 p-4 rounded-xl bg-white/5 border border-white/10">
                                 <p className="text-sm text-white/80">Select seats to cancel. Confirmed seats are listed below.</p>
                             </div>
@@ -1056,7 +1074,7 @@ export default function MediaPage({ keycloak }) {
                                             });
                                         }}
                                         className={`
-                                            w-12 h-12 rounded-xl text-sm font-semibold transition-all duration-200 transform hover:scale-105 active:scale-95
+                                            relative w-12 h-12 rounded-xl text-sm font-semibold transition-all duration-200 transform hover:scale-105 active:scale-95
                                             ${s.taken
                                                 ? 'bg-red-500/20 text-red-400 border border-red-500/30 cursor-not-allowed opacity-60'
                                                 : s.selected
@@ -1067,7 +1085,12 @@ export default function MediaPage({ keycloak }) {
                                             }
                                         `}
                                     >
-                                    {s.selected && typeof s._countdown === 'number' ? `${s.seat_no}` : s.seat_no}
+                                    {s.seat_no}
+                                    {s.selected && typeof s._countdown === 'number' && (
+                                        <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-black/70 border border-white/20 text-white text-[10px] flex items-center justify-center">
+                                            {s._countdown}
+                                        </span>
+                                    )}
                                 </button>
                             ))}
                         </div>
@@ -1437,6 +1460,22 @@ function SeatRealtime({ eventId, socketRef, seatSelect, setSeatSelect, holdTimer
         sock.on('seats:snapshot', onSnapshot);
         sock.on('seat:held', onHeld);
         sock.on('seat:released', onReleased);
+        const onBooked = ({ eventId: eid, seatNo }) => {
+            if (eid !== eventId) return;
+            setSeatSelect(prev => ({
+                ...prev,
+                seats: prev.seats.map(s => s.seat_no === seatNo ? { ...s, taken: true, held: false, selected: false, _countdown: 0 } : s)
+            }));
+        };
+        const onFreed = ({ eventId: eid, seatNo }) => {
+            if (eid !== eventId) return;
+            setSeatSelect(prev => ({
+                ...prev,
+                seats: prev.seats.map(s => s.seat_no === seatNo ? { ...s, taken: false, held: false, selected: false, _countdown: 0 } : s)
+            }));
+        };
+        sock.on('seat:booked', onBooked);
+        sock.on('seat:freed', onFreed);
 
         // Periodic reconciliation to reflect TTL expiries even if no release event fires
         const reconcileId = setInterval(() => {
@@ -1453,6 +1492,8 @@ function SeatRealtime({ eventId, socketRef, seatSelect, setSeatSelect, holdTimer
             sock.off('seats:snapshot', onSnapshot);
             sock.off('seat:held', onHeld);
             sock.off('seat:released', onReleased);
+            sock.off('seat:booked', onBooked);
+            sock.off('seat:freed', onFreed);
             sock.disconnect();
             socketRef.current = null;
         };

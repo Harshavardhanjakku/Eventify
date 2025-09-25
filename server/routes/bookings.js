@@ -36,8 +36,19 @@ router.post('/', async (req, res) => {
     const client = await pool.connect();
     try {
         await ensureBookingTables();
-        const { event_id, user_id, seats, seat_numbers } = req.body || {};
+        const { event_id, user_id, seats, seat_numbers, idempotency_key } = req.body || {};
         const redis = getRedis();
+
+        // Idempotency: if key provided, ensure single processing per (event,user,key)
+        let idempoKey = null;
+        if (idempotency_key) {
+            idempoKey = `booking:idempo:${event_id}:${user_id}:${idempotency_key}`;
+            const setOk = await redis.set(idempoKey, '1', 'NX', 'EX', 60);
+            if (setOk !== 'OK') {
+                // Already processed or in-flight
+                return res.status(409).json({ error: 'duplicate_request' });
+            }
+        }
 
         await client.query('BEGIN');
 
@@ -82,8 +93,19 @@ router.post('/', async (req, res) => {
             }
             for (const s of seatNos) {
                 await client.query("INSERT INTO eventify_booking_seats(event_id, booking_id, user_id, seat_no, status) VALUES($1,$2,$3,$4,'booked')", [event_id, rows[0].id, user_id, s]);
+                // best-effort: clear any existing hold
+                try { await redis.del(`seat:hold:${event_id}:${s}`); await redis.srem(`event:${event_id}:holds`, s); } catch {}
             }
             await client.query('UPDATE eventify_events SET available_slots = GREATEST(available_slots - $1, 0), updated_at = NOW() WHERE id=$2', [seats, event_id]);
+            // broadcast seat:booked to room
+            try {
+                const io = req.app.get('io');
+                if (io) {
+                    for (const s of seatNos) {
+                        io.to(`event:${event_id}`).emit('seat:booked', { eventId: event_id, seatNo: s });
+                    }
+                }
+            } catch {}
         }
 
         await client.query('COMMIT');
@@ -153,6 +175,8 @@ router.post('/:id/cancel', async (req, res) => {
         if (freedCount > 0) {
             await redis.incrby(`event:${booking.event_id}:slots`, freedCount);
             await client.query('UPDATE eventify_events SET available_slots = available_slots + $1, updated_at = NOW() WHERE id=$2', [freedCount, booking.event_id]);
+            // broadcast freed seats
+            try { const io = req.app.get('io'); if (io) { for (const r of freedRes.rows) { io.to(`event:${booking.event_id}`).emit('seat:freed', { eventId: booking.event_id, seatNo: Number(r.seat_no) }); } } } catch {}
 
             // promote from waitlist for each freed seat
             for (let i = 0; i < freedCount; i++) {
@@ -175,6 +199,7 @@ router.post('/:id/cancel', async (req, res) => {
                     while (taken.has(seat)) seat++;
                     await client.query("INSERT INTO eventify_booking_seats(event_id, booking_id, user_id, seat_no, status) VALUES($1,$2,$3,$4,'booked')", [booking.event_id, promotedRows[0].id, nextUserId, seat]);
                     await client.query('UPDATE eventify_events SET available_slots = GREATEST(available_slots - 1, 0), updated_at = NOW() WHERE id=$1', [booking.event_id]);
+                    try { const io = req.app.get('io'); if (io) { io.to(`event:${booking.event_id}`).emit('seat:booked', { eventId: booking.event_id, seatNo: seat }); } } catch {}
                     try { await publish('notifications', { type: 'waitlist_promoted', eventId: booking.event_id, userId: nextUserId }); } catch { }
                 } else {
                     // nobody to promote; push seat back to availability handled above
@@ -249,6 +274,8 @@ router.post('/:id/cancel-seats', async (req, res) => {
         if (cancelledCount === 0) { await client.query('ROLLBACK'); return res.json({ ok: true, cancelled: 0 }); }
 
         await client.query('UPDATE eventify_events SET available_slots = available_slots + $1, updated_at = NOW() WHERE id=$2', [cancelledCount, booking.event_id]);
+        // broadcast freed seats
+        try { const io = req.app.get('io'); if (io) { for (const r of seatRes.rows) { io.to(`event:${booking.event_id}`).emit('seat:freed', { eventId: booking.event_id, seatNo: Number(r.seat_no) }); } } } catch {}
 
         const redis = getRedis();
         for (let i = 0; i < cancelledCount; i++) {
@@ -268,6 +295,7 @@ router.post('/:id/cancel-seats', async (req, res) => {
                 while (taken.has(seat)) seat++;
                 await client.query("INSERT INTO eventify_booking_seats(event_id, booking_id, user_id, seat_no, status) VALUES($1,$2,$3,$4,'booked')", [booking.event_id, promotedRows[0].id, nextUserId, seat]);
                 await client.query('UPDATE eventify_events SET available_slots = GREATEST(available_slots - 1, 0), updated_at = NOW() WHERE id=$1', [booking.event_id]);
+                try { const io = req.app.get('io'); if (io) { io.to(`event:${booking.event_id}`).emit('seat:booked', { eventId: booking.event_id, seatNo: seat }); } } catch {}
             }
         }
 
