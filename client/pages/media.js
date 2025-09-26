@@ -596,7 +596,11 @@ export default function MediaPage({ keycloak }) {
                                                             return arr.map(x => ({ ...x, booking_id: bk.booking_id }));
                                                         }));
                                                         const merged = seatLists.flat();
-                                                        setManageSeats(merged);
+                                                        // Remove duplicates based on seat_no and event_id
+                                                        const uniqueSeats = merged.filter((seat, index, self) => 
+                                                            index === self.findIndex(s => s.seat_no === seat.seat_no && s.event_id === seat.event_id)
+                                                        );
+                                                        setManageSeats(uniqueSeats);
                                                         setManageBooking({ event_id: g.event.event_id, event_name: g.event.event_name, grouped: true, bookings: g.bookings });
                                                         setShowManageSeatsModal(true);
                                                     } catch (e) {

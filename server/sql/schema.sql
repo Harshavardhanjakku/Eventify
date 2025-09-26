@@ -104,12 +104,26 @@ CREATE TABLE IF NOT EXISTS eventify_booking_history (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Waitlist for sold-out events
+CREATE TABLE IF NOT EXISTS eventify_waitlist (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID NOT NULL REFERENCES eventify_events(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES eventify_users(id) ON DELETE CASCADE,
+  position INT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('waiting','notified','confirmed','expired','cancelled')) DEFAULT 'waiting',
+  notified_at TIMESTAMP,
+  expires_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(event_id, user_id)
+);
+
 -- Notifications
 CREATE TABLE IF NOT EXISTS eventify_notifications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES eventify_users(id) ON DELETE CASCADE,
   event_id UUID REFERENCES eventify_events(id) ON DELETE CASCADE,
-  type TEXT NOT NULL CHECK (type IN ('booking_confirmed','booking_waitlisted','booking_cancelled','waitlist_promoted','event_updated')),
+  type TEXT NOT NULL CHECK (type IN ('booking_confirmed','booking_waitlisted','booking_cancelled','waitlist_promoted','event_updated','seat_available')),
   message TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','sent','failed')) DEFAULT 'pending',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -136,6 +150,10 @@ CREATE INDEX IF NOT EXISTS idx_eventify_events_org_id ON eventify_events(org_id)
 CREATE INDEX IF NOT EXISTS idx_eventify_events_date ON eventify_events(event_date);
 CREATE INDEX IF NOT EXISTS idx_eventify_bookings_event_id ON eventify_bookings(event_id);
 CREATE INDEX IF NOT EXISTS idx_eventify_bookings_user_id ON eventify_bookings(user_id);
+CREATE INDEX IF NOT EXISTS idx_eventify_waitlist_event_id ON eventify_waitlist(event_id);
+CREATE INDEX IF NOT EXISTS idx_eventify_waitlist_user_id ON eventify_waitlist(user_id);
+CREATE INDEX IF NOT EXISTS idx_eventify_waitlist_position ON eventify_waitlist(event_id, position);
+CREATE INDEX IF NOT EXISTS idx_eventify_waitlist_status ON eventify_waitlist(status);
 
 -- Functions for automatic updates
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -215,6 +233,18 @@ DO $$ BEGIN
   ) THEN
     CREATE TRIGGER update_eventify_organization_invites_updated_at
     BEFORE UPDATE ON eventify_organization_invites
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE t.tgname = 'update_eventify_waitlist_updated_at' AND c.relname = 'eventify_waitlist'
+  ) THEN
+    CREATE TRIGGER update_eventify_waitlist_updated_at
+    BEFORE UPDATE ON eventify_waitlist
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
   END IF;
 END $$;

@@ -15,6 +15,8 @@ export default function EventSeatPage() {
     const [quantity, setQuantity] = useState(1);
     const [waitlistPosition, setWaitlistPosition] = useState(null);
     const [isOnWaitlist, setIsOnWaitlist] = useState(false);
+    const [showWaitlistConfirmation, setShowWaitlistConfirmation] = useState(false);
+    const [waitlistExpiresAt, setWaitlistExpiresAt] = useState(null);
     const [connected, setConnected] = useState(true);
     const [currentUserId, setCurrentUserId] = useState(null);
     const socketRef = useRef(null);
@@ -100,6 +102,42 @@ export default function EventSeatPage() {
             setEventData(prev => ({ ...prev, available_slots: availableSlots }));
         };
         sock.on('event:availability:updated', onAvailabilityUpdate);
+
+        // Handle waitlist notifications
+        const onSeatAvailableForWaitlist = ({ eventId: eid, userId, seatNo, expiresAt, message, countdown }) => {
+            if (String(eid) !== String(id) || String(userId) !== String(currentUserId)) return;
+            setMessage(`🎉 ${message}`);
+            // Show confirmation button or modal
+            setShowWaitlistConfirmation(true);
+            setWaitlistExpiresAt(expiresAt);
+            
+            // Start countdown timer
+            if (countdown) {
+                let timeLeft = countdown;
+                const timer = setInterval(() => {
+                    timeLeft--;
+                    if (timeLeft <= 0) {
+                        clearInterval(timer);
+                        setShowWaitlistConfirmation(false);
+                        setMessage('⏰ Time expired. You remain on the waitlist.');
+                        // Notify server about timeout
+                        try {
+                            API.post('/bookings/waitlist/timeout', { event_id: id, user_id: currentUserId });
+                        } catch {}
+                    }
+                }, 1000);
+            }
+        };
+        sock.on('seatAvailableForWaitlist', onSeatAvailableForWaitlist);
+
+        // Handle waitlist seat confirmation
+        const onWaitlistSeatConfirmed = ({ eventId: eid, userId, seatNo }) => {
+            if (String(eid) !== String(id)) return;
+            setMessage(`✅ Seat ${seatNo} has been confirmed by another user.`);
+            setIsOnWaitlist(false);
+            setWaitlistPosition(null);
+        };
+        sock.on('waitlistSeatConfirmed', onWaitlistSeatConfirmed);
         const reconcileId = setInterval(() => { try { sock.emit('seats:snapshot:request', { eventId: id }); } catch {} }, 2000);
         return () => {
             try { for (const idc of holdTimersRef.current.values()) clearInterval(idc); holdTimersRef.current.clear(); } catch {}
@@ -110,6 +148,8 @@ export default function EventSeatPage() {
             sock.off('seat:booked', onBooked);
             sock.off('seat:freed', onFreed);
             sock.off('event:availability:updated', onAvailabilityUpdate);
+            sock.off('seatAvailableForWaitlist', onSeatAvailableForWaitlist);
+            sock.off('waitlistSeatConfirmed', onWaitlistSeatConfirmed);
             sock.disconnect();
             socketRef.current = null;
         };
@@ -247,40 +287,116 @@ export default function EventSeatPage() {
                     <div className="text-sm text-white/60">{selectedCount === 0 ? 'Select at least one seat to continue' : `${selectedCount} seat(s) selected`}</div>
                     <div className="flex items-center gap-2">
                         <button onClick={() => router.push('/media')} className="px-4 py-2 rounded-xl border border-white/20 text-white/80 font-medium hover:bg-white/10">Cancel</button>
-                        <button disabled={bookingLoading || selectedCount === 0} onClick={async () => {
-                            const selected = seatsState.seats.filter(s => s.selected).map(s => s.seat_no);
-                            try {
-                                setBookingLoading(true);
-                                // simple idempotency token per attempt
-                                const token = `${id}:${currentUserId}:${Date.now()}`;
-                                const response = await API.post('/bookings', { event_id: id, user_id: currentUserId, seats: selected.length, seat_numbers: selected, idempotency_key: token });
-                                
-                                // Handle different booking statuses
-                                if (response.data.status === 'confirmed') {
-                                    setMessage('✅ Booking confirmed! Your seats have been reserved.');
-                                    try { const sock = socketRef.current; if (sock) { for (const num of selected) sock.emit('seat:release', { eventId: id, seatNo: num }, () => {}); } } catch {}
-                                    router.push('/media');
-                                } else if (response.data.status === 'waiting') {
-                                    setMessage(`⏳ Added to waitlist at position ${response.data.waitlistPosition}. You'll be notified if seats become available.`);
-                                    setWaitlistPosition(response.data.waitlistPosition);
-                                    setIsOnWaitlist(true);
-                                    // Don't redirect, let user see waitlist status
+                        {eventData.available_slots > 0 ? (
+                            <button disabled={bookingLoading || selectedCount === 0} onClick={async () => {
+                                const selected = seatsState.seats.filter(s => s.selected).map(s => s.seat_no);
+                                try {
+                                    setBookingLoading(true);
+                                    // simple idempotency token per attempt
+                                    const token = `${id}:${currentUserId}:${Date.now()}`;
+                                    const response = await API.post('/bookings', { event_id: id, user_id: currentUserId, seats: selected.length, seat_numbers: selected, idempotency_key: token });
+                                    
+                                    // Handle different booking statuses
+                                    if (response.data.status === 'confirmed') {
+                                        setMessage('✅ Booking confirmed! Your seats have been reserved.');
+                                        try { const sock = socketRef.current; if (sock) { for (const num of selected) sock.emit('seat:release', { eventId: id, seatNo: num }, () => {}); } } catch {}
+                                        router.push('/media');
+                                    } else if (response.data.status === 'waiting') {
+                                        setMessage(`⏳ Added to waitlist at position ${response.data.waitlistPosition}. You'll be notified if seats become available.`);
+                                        setWaitlistPosition(response.data.waitlistPosition);
+                                        setIsOnWaitlist(true);
+                                        // Don't redirect, let user see waitlist status
+                                    }
+                                } catch (e) {
+                                    if (e.response?.status === 409 && e.response?.data?.occupiedSeats) {
+                                        setMessage(`❌ Seat(s) ${e.response.data.occupiedSeats.join(', ')} are already booked. Please select other seats.`);
+                                    } else {
+                                        setMessage('❌ Failed to book: ' + (e.response?.data?.error || e.message));
+                                    }
+                                } finally {
+                                    setBookingLoading(false);
                                 }
-                            } catch (e) {
-                                if (e.response?.status === 409 && e.response?.data?.occupiedSeats) {
-                                    setMessage(`❌ Seat(s) ${e.response.data.occupiedSeats.join(', ')} are already booked. Please select other seats.`);
-                                } else {
-                                    setMessage('❌ Failed to book: ' + (e.response?.data?.error || e.message));
+                            }} className="px-6 py-2 bg-cyan-300 hover:bg-cyan-400 text-black rounded-xl text-sm font-semibold disabled:opacity-50">Book Selected</button>
+                        ) : (
+                            <button disabled={bookingLoading} onClick={async () => {
+                                try {
+                                    setBookingLoading(true);
+                                    const response = await API.post('/bookings/waitlist', { event_id: id, user_id: currentUserId });
+                                    
+                                    if (response.data.status === 'already_waiting') {
+                                        setMessage(`⏳ You're already on the waitlist at position ${response.data.position}.`);
+                                        setWaitlistPosition(response.data.position);
+                                        setIsOnWaitlist(true);
+                                    } else {
+                                        setMessage(`⏳ ${response.data.message}`);
+                                        setWaitlistPosition(response.data.position);
+                                        setIsOnWaitlist(true);
+                                    }
+                                } catch (e) {
+                                    setMessage('❌ Failed to join waitlist: ' + (e.response?.data?.error || e.message));
+                                } finally {
+                                    setBookingLoading(false);
                                 }
-                            } finally {
-                                setBookingLoading(false);
-                            }
-                        }} className="px-6 py-2 bg-cyan-300 hover:bg-cyan-400 text-black rounded-xl text-sm font-semibold disabled:opacity-50">Book Selected</button>
+                            }} className="px-6 py-2 bg-yellow-400 hover:bg-yellow-500 text-black rounded-xl text-sm font-semibold disabled:opacity-50">Join Waitlist</button>
+                        )}
                     </div>
                 </div>
 
                 {message && (
                     <div className="mt-4 text-sm text-white/80">{message}</div>
+                )}
+
+                {/* Waitlist Confirmation Modal */}
+                {showWaitlistConfirmation && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                        <div className="bg-white/10 backdrop-blur-xl rounded-2xl p-6 max-w-md mx-4 border border-white/20">
+                            <div className="text-center">
+                                <div className="text-4xl mb-4">🎉</div>
+                                <h3 className="text-xl font-bold text-white mb-2">Seat Available!</h3>
+                                <p className="text-white/80 mb-4">Hurry up! A seat is available for you. Confirm within 5 seconds.</p>
+                                <div className="mb-4">
+                                    <div className="w-full bg-gray-700 rounded-full h-2">
+                                        <div className="bg-yellow-400 h-2 rounded-full animate-pulse" style={{width: '100%'}}></div>
+                                    </div>
+                                    <p className="text-yellow-400 text-sm mt-2">⏰ 5 seconds remaining</p>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button 
+                                        onClick={async () => {
+                                            try {
+                                                setBookingLoading(true);
+                                                const response = await API.post('/bookings/waitlist/confirm', { 
+                                                    event_id: id, 
+                                                    user_id: currentUserId 
+                                                });
+                                                setMessage('✅ ' + response.data.message);
+                                                setShowWaitlistConfirmation(false);
+                                                setIsOnWaitlist(false);
+                                                setWaitlistPosition(null);
+                                                router.push('/media');
+                                            } catch (e) {
+                                                setMessage('❌ Failed to confirm: ' + (e.response?.data?.error || e.message));
+                                            } finally {
+                                                setBookingLoading(false);
+                                            }
+                                        }}
+                                        className="px-6 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl font-semibold"
+                                    >
+                                        Confirm Booking
+                                    </button>
+                                    <button 
+                                        onClick={() => {
+                                            setShowWaitlistConfirmation(false);
+                                            setMessage('⏳ You declined the seat. You remain on the waitlist.');
+                                        }}
+                                        className="px-6 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-xl font-semibold"
+                                    >
+                                        Decline
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 )}
             </div>
         </div>
