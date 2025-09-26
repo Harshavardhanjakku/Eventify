@@ -582,7 +582,9 @@ export default function MediaPage({ keycloak }) {
                                             </div>
                                             <div className="flex items-center justify-between mt-3 text-xs text-white/60">
                                                 <span>Seats: {g.totalSeats}</span>
-                                                <span>Status: confirmed</span>
+                                                <span className={g.bookings[0]?.status === 'waiting' ? 'text-yellow-400' : 'text-green-400'}>
+                                                    Status: {g.bookings[0]?.status === 'waiting' ? `waiting (position ${g.bookings[0]?.waiting_number})` : 'confirmed'}
+                                                </span>
                                             </div>
                                             <div className="mt-4 flex items-center gap-2">
                                                 <button onClick={async () => {

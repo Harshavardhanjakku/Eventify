@@ -13,6 +13,8 @@ export default function EventSeatPage() {
     const [message, setMessage] = useState("");
     const [bookingLoading, setBookingLoading] = useState(false);
     const [quantity, setQuantity] = useState(1);
+    const [waitlistPosition, setWaitlistPosition] = useState(null);
+    const [isOnWaitlist, setIsOnWaitlist] = useState(false);
     const [connected, setConnected] = useState(true);
     const [currentUserId, setCurrentUserId] = useState(null);
     const socketRef = useRef(null);
@@ -152,6 +154,21 @@ export default function EventSeatPage() {
                     )}
                 </div>
 
+                {/* waitlist status */}
+                {isOnWaitlist && waitlistPosition && (
+                    <div className="mb-3 p-4 rounded-xl border border-yellow-400/30 bg-yellow-400/10 text-yellow-300">
+                        <div className="flex items-center gap-3">
+                            <div className="w-6 h-6 rounded-full bg-yellow-400/20 flex items-center justify-center">
+                                <span className="text-yellow-300 text-sm">⏳</span>
+                            </div>
+                            <div>
+                                <div className="font-semibold">You're on the waitlist!</div>
+                                <div className="text-sm text-yellow-200">Position: {waitlistPosition} • You'll be notified when seats become available</div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* connection banner */}
                 {!connected && (
                     <div className="mb-3 p-3 rounded-xl border border-red-400/30 bg-red-400/10 text-red-300 text-sm">Disconnected from server; attempting to reconnect… seat map may be stale.</div>
@@ -236,10 +253,19 @@ export default function EventSeatPage() {
                                 setBookingLoading(true);
                                 // simple idempotency token per attempt
                                 const token = `${id}:${currentUserId}:${Date.now()}`;
-                                await API.post('/bookings', { event_id: id, user_id: currentUserId, seats: selected.length, seat_numbers: selected, idempotency_key: token });
-                                setMessage('✅ Booking submitted successfully');
-                                try { const sock = socketRef.current; if (sock) { for (const num of selected) sock.emit('seat:release', { eventId: id, seatNo: num }, () => {}); } } catch {}
-                                router.push('/media');
+                                const response = await API.post('/bookings', { event_id: id, user_id: currentUserId, seats: selected.length, seat_numbers: selected, idempotency_key: token });
+                                
+                                // Handle different booking statuses
+                                if (response.data.status === 'confirmed') {
+                                    setMessage('✅ Booking confirmed! Your seats have been reserved.');
+                                    try { const sock = socketRef.current; if (sock) { for (const num of selected) sock.emit('seat:release', { eventId: id, seatNo: num }, () => {}); } } catch {}
+                                    router.push('/media');
+                                } else if (response.data.status === 'waiting') {
+                                    setMessage(`⏳ Added to waitlist at position ${response.data.waitlistPosition}. You'll be notified if seats become available.`);
+                                    setWaitlistPosition(response.data.waitlistPosition);
+                                    setIsOnWaitlist(true);
+                                    // Don't redirect, let user see waitlist status
+                                }
                             } catch (e) {
                                 if (e.response?.status === 409 && e.response?.data?.occupiedSeats) {
                                     setMessage(`❌ Seat(s) ${e.response.data.occupiedSeats.join(', ')} are already booked. Please select other seats.`);

@@ -52,19 +52,27 @@ router.post('/', async (req, res) => {
 
         await client.query('BEGIN');
 
-        // Check current available slots from DB first
-        const eventRes = await client.query('SELECT available_slots FROM eventify_events WHERE id=$1 FOR UPDATE', [event_id]);
+        // FCFS: Atomic capacity check with waitlist placement
+        const eventRes = await client.query('SELECT available_slots, total_slots FROM eventify_events WHERE id=$1 FOR UPDATE', [event_id]);
         if (!eventRes.rows[0]) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Event not found' });
         }
         const currentAvailable = eventRes.rows[0].available_slots;
+        const totalSlots = eventRes.rows[0].total_slots;
 
         let status = 'confirmed';
         let waiting_number = null;
-        if (currentAvailable < seats) {
+        let waitlist_position = null;
+
+        // FCFS Logic: If enough seats available, confirm immediately
+        if (currentAvailable >= seats) {
+            status = 'confirmed';
+        } else {
+            // Place on waitlist in FCFS order
             status = 'waiting';
             waiting_number = await redis.rpush(`event:${event_id}:waitlist`, user_id);
+            waitlist_position = waiting_number;
         }
 
         const { rows } = await client.query(
@@ -76,12 +84,14 @@ router.post('/', async (req, res) => {
         // Initialize allocated array for response
         let allocated = [];
 
-        // keep eventify_events.available_slots in sync and allocate seat numbers for confirmed eventify_bookings
+        // FCFS Seat Allocation: Honor preferred seats when free, otherwise auto-assign
         if (status === 'confirmed') {
-            // compute desired seats (if provided and all available)
+            // Get currently taken seats
             const takenRes = await client.query("SELECT seat_no FROM eventify_booking_seats WHERE event_id=$1 AND status='booked' ORDER BY seat_no", [event_id]);
             const taken = new Set(takenRes.rows.map(r => Number(r.seat_no)));
             let desired = [];
+            
+            // Preferred seats logic: Honor if all requested seats are free
             if (Array.isArray(seat_numbers) && seat_numbers.length === seats) {
                 const nums = seat_numbers.map(Number);
                 // Check if any requested seats are already taken
@@ -94,7 +104,10 @@ router.post('/', async (req, res) => {
                         occupiedSeats 
                     });
                 }
-                if (nums.every(n => n > 0 && !taken.has(n))) desired = nums;
+                // If all preferred seats are free, use them
+                if (nums.every(n => n > 0 && !taken.has(n))) {
+                    desired = nums;
+                }
             }
 
             const allocateNextAvailable = async () => {
@@ -156,10 +169,14 @@ router.post('/', async (req, res) => {
             });
         } catch { }
 
-        // Return booking with allocated seats for confirmed bookings
+        // Return booking with status-specific information
         const response = { ...rows[0] };
         if (status === 'confirmed' && allocated.length > 0) {
             response.allocatedSeats = allocated;
+            response.message = 'Booking confirmed! Your seats have been reserved.';
+        } else if (status === 'waiting') {
+            response.waitlistPosition = waitlist_position;
+            response.message = `Added to waitlist at position ${waitlist_position}. You'll be notified if seats become available.`;
         }
         res.status(201).json(response);
     } catch (err) {
@@ -256,6 +273,32 @@ router.post('/:id/cancel', async (req, res) => {
         res.status(500).json({ error: err.message });
     } finally {
         client.release();
+    }
+});
+
+// GET /bookings/waitlist/:eventId/:userId - Get user's waitlist position
+router.get('/waitlist/:eventId/:userId', async (req, res) => {
+    try {
+        const { eventId, userId } = req.params;
+        const redis = getRedis();
+        
+        // Get waitlist from Redis
+        const waitlist = await redis.lrange(`event:${eventId}:waitlist`, 0, -1);
+        const position = waitlist.indexOf(userId) + 1; // 1-based position
+        
+        if (position === 0) {
+            return res.status(404).json({ error: 'User not found on waitlist' });
+        }
+        
+        res.json({
+            eventId,
+            userId,
+            position,
+            totalOnWaitlist: waitlist.length,
+            estimatedWaitTime: position > 1 ? `${position - 1} people ahead` : 'Next in line'
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
