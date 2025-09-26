@@ -107,11 +107,18 @@ export function OrganizationProvider({ children, keycloak }) {
         dispatch({ type: ORG_ACTIONS.SET_CURRENT_ORG, payload: sortedOrgs[0] });
       }
     } catch (error) {
-      console.error('Failed to load organizations:', error);
-      dispatch({ 
-        type: ORG_ACTIONS.SET_ERROR, 
-        payload: 'Failed to load organizations. Please try again.' 
-      });
+      // Only show error for non-network issues to avoid user confusion
+      if (error.code !== 'ERR_NETWORK') {
+        console.error('Failed to load organizations:', error);
+        dispatch({ 
+          type: ORG_ACTIONS.SET_ERROR, 
+          payload: 'Failed to load organizations. Please try again.' 
+        });
+      } else {
+        // For network errors, just log and don't show error to user
+        console.warn('Network error loading organizations, will retry later');
+        dispatch({ type: ORG_ACTIONS.SET_LOADING, payload: false });
+      }
     }
   };
 
@@ -129,10 +136,7 @@ export function OrganizationProvider({ children, keycloak }) {
         throw new Error('You do not have access to this organization');
       }
       
-      // Simulate network delay for better UX
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // Save to localStorage
+      // Save to localStorage immediately for better performance
       localStorage.setItem('currentOrganizationId', organization.id);
       localStorage.setItem('currentOrganizationName', organization.name);
       

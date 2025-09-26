@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import { io } from "socket.io-client";
 import API from "../../lib/api";
+import { useOrganization } from "../../contexts/OrganizationContext";
 
 export default function EventSeatPage() {
     const router = useRouter();
@@ -16,6 +17,7 @@ export default function EventSeatPage() {
     const [currentUserId, setCurrentUserId] = useState(null);
     const socketRef = useRef(null);
     const holdTimersRef = useRef(new Map());
+    const { currentOrganization, loadOrganizations } = useOrganization();
 
     // load current user id via /users?keycloak_id if available in window (kept minimal)
     useEffect(() => {
@@ -25,10 +27,16 @@ export default function EventSeatPage() {
                 if (!keycloakId) return;
                 const userResponse = await API.get(`/users?keycloak_id=${keycloakId}`);
                 const user = userResponse.data?.[0];
-                if (user?.id) setCurrentUserId(user.id);
-            } catch {}
+                if (user?.id) {
+                    setCurrentUserId(user.id);
+                    // Load organizations for the user
+                    await loadOrganizations(user.id);
+                }
+            } catch (error) {
+                console.error('Failed to load user data:', error);
+            }
         })();
-    }, []);
+    }, [loadOrganizations]);
 
     useEffect(() => {
         if (!id) return;
@@ -83,6 +91,13 @@ export default function EventSeatPage() {
         };
         sock.on('seat:booked', onBooked);
         sock.on('seat:freed', onFreed);
+        
+        // Handle availability updates
+        const onAvailabilityUpdate = ({ eventId: eid, availableSlots }) => {
+            if (String(eid) !== String(id)) return;
+            setEventData(prev => ({ ...prev, available_slots: availableSlots }));
+        };
+        sock.on('event:availability:updated', onAvailabilityUpdate);
         const reconcileId = setInterval(() => { try { sock.emit('seats:snapshot:request', { eventId: id }); } catch {} }, 2000);
         return () => {
             try { for (const idc of holdTimersRef.current.values()) clearInterval(idc); holdTimersRef.current.clear(); } catch {}
@@ -92,6 +107,7 @@ export default function EventSeatPage() {
             sock.off('seat:released', onReleased);
             sock.off('seat:booked', onBooked);
             sock.off('seat:freed', onFreed);
+            sock.off('event:availability:updated', onAvailabilityUpdate);
             sock.disconnect();
             socketRef.current = null;
         };
@@ -225,7 +241,11 @@ export default function EventSeatPage() {
                                 try { const sock = socketRef.current; if (sock) { for (const num of selected) sock.emit('seat:release', { eventId: id, seatNo: num }, () => {}); } } catch {}
                                 router.push('/media');
                             } catch (e) {
-                                setMessage('❌ Failed to book: ' + (e.response?.data?.error || e.message));
+                                if (e.response?.status === 409 && e.response?.data?.occupiedSeats) {
+                                    setMessage(`❌ Seat(s) ${e.response.data.occupiedSeats.join(', ')} are already booked. Please select other seats.`);
+                                } else {
+                                    setMessage('❌ Failed to book: ' + (e.response?.data?.error || e.message));
+                                }
                             } finally {
                                 setBookingLoading(false);
                             }

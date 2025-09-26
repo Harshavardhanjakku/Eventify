@@ -37,6 +37,7 @@ API.interceptors.response.use(
   (error) => {
     if (error.code === 'ERR_NETWORK') {
       console.error('Network error - server might be down:', error.message);
+      // Don't show network errors to user, they're usually temporary
     } else if (error.response) {
       console.error('API Error:', error.response.status, error.response.data);
     } else {

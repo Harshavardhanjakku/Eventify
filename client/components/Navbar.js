@@ -35,7 +35,12 @@ export default function Navbar({ keycloak }) {
         } catch (_) { }
       }
     } catch (error) {
-      console.error('Error loading pending invites:', error);
+      // Only log non-network errors to avoid console spam
+      if (error.code !== 'ERR_NETWORK') {
+        console.error('Error loading pending invites:', error);
+      }
+      // Set empty array on error to prevent UI issues
+      setPendingInvites([]);
       try {
         const event = new CustomEvent('pendingInviteCount', { detail: 0 });
         window.dispatchEvent(event);
@@ -58,6 +63,20 @@ export default function Navbar({ keycloak }) {
       loadOrganizations(currentUserId);
     }
   }, [keycloak?.authenticated, currentUserId, loadOrganizations]);
+
+  // Add retry mechanism for organization loading
+  useEffect(() => {
+    if (!keycloak?.authenticated || !currentUserId) return;
+    
+    const retryInterval = setInterval(() => {
+      // Only retry if we don't have organizations and no current error
+      if (currentUserId && !currentOrganization) {
+        loadOrganizations(currentUserId, true);
+      }
+    }, 10000); // Retry every 10 seconds
+
+    return () => clearInterval(retryInterval);
+  }, [keycloak?.authenticated, currentUserId, currentOrganization, loadOrganizations]);
 
   // Close profile on outside click or route change
   useEffect(() => {

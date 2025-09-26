@@ -52,14 +52,17 @@ router.post('/', async (req, res) => {
 
         await client.query('BEGIN');
 
-        // atomic slots decrement using Redis
-        const remaining = await redis.decrby(`event:${event_id}:slots`, seats);
+        // Check current available slots from DB first
+        const eventRes = await client.query('SELECT available_slots FROM eventify_events WHERE id=$1 FOR UPDATE', [event_id]);
+        if (!eventRes.rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Event not found' });
+        }
+        const currentAvailable = eventRes.rows[0].available_slots;
 
         let status = 'confirmed';
         let waiting_number = null;
-        if (remaining < 0) {
-            // revert overshoot
-            await redis.incrby(`event:${event_id}:slots`, seats);
+        if (currentAvailable < seats) {
             status = 'waiting';
             waiting_number = await redis.rpush(`event:${event_id}:waitlist`, user_id);
         }
@@ -70,40 +73,73 @@ router.post('/', async (req, res) => {
             [event_id, user_id, seats, status, waiting_number]
         );
 
+        // Initialize allocated array for response
+        let allocated = [];
+
         // keep eventify_events.available_slots in sync and allocate seat numbers for confirmed eventify_bookings
         if (status === 'confirmed') {
+            // compute desired seats (if provided and all available)
             const takenRes = await client.query("SELECT seat_no FROM eventify_booking_seats WHERE event_id=$1 AND status='booked' ORDER BY seat_no", [event_id]);
             const taken = new Set(takenRes.rows.map(r => Number(r.seat_no)));
-            let seatNos = [];
+            let desired = [];
             if (Array.isArray(seat_numbers) && seat_numbers.length === seats) {
-                // use desired seats if all are free
-                for (const s of seat_numbers.map(Number)) {
-                    if (s <= 0 || taken.has(s)) { seatNos = []; break; }
-                    seatNos.push(s);
+                const nums = seat_numbers.map(Number);
+                // Check if any requested seats are already taken
+                const occupiedSeats = nums.filter(n => n > 0 && taken.has(n));
+                if (occupiedSeats.length > 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({ 
+                        error: 'Seat conflict', 
+                        message: `Seat(s) ${occupiedSeats.join(', ')} are already booked. Please select other seats.`,
+                        occupiedSeats 
+                    });
                 }
+                if (nums.every(n => n > 0 && !taken.has(n))) desired = nums;
             }
-            if (seatNos.length !== seats) {
-                // fallback: auto-assign lowest available
-                seatNos = [];
+
+            const allocateNextAvailable = async () => {
+                // recompute taken each time to avoid race conditions
+                const tRes = await client.query("SELECT seat_no FROM eventify_booking_seats WHERE event_id=$1 AND status='booked' ORDER BY seat_no", [event_id]);
+                const tSet = new Set(tRes.rows.map(r => Number(r.seat_no)));
                 let seat = 1;
-                while (seatNos.length < seats) {
-                    if (!taken.has(seat)) seatNos.push(seat);
-                    seat++;
+                while (tSet.has(seat)) seat++;
+                return seat;
+            };
+
+            while (allocated.length < seats) {
+                const candidate = desired.length > 0 ? desired.shift() : await allocateNextAvailable();
+                try {
+                    await client.query(
+                        "INSERT INTO eventify_booking_seats(event_id, booking_id, user_id, seat_no, status) VALUES($1,$2,$3,$4,'booked')",
+                        [event_id, rows[0].id, user_id, candidate]
+                    );
+                    allocated.push(candidate);
+                    // best-effort: clear any existing hold
+                    try { await redis.del(`seat:hold:${event_id}:${candidate}`); await redis.srem(`event:${event_id}:holds`, candidate); } catch {}
+                } catch (e) {
+                    // Unique violation -> seat got booked concurrently. Retry with next available
+                    if (e && e.code === '23505') {
+                        // skip and retry loop without incrementing allocated count
+                        desired = desired.filter(n => n !== candidate);
+                        continue;
+                    }
+                    throw e;
                 }
             }
-            for (const s of seatNos) {
-                await client.query("INSERT INTO eventify_booking_seats(event_id, booking_id, user_id, seat_no, status) VALUES($1,$2,$3,$4,'booked')", [event_id, rows[0].id, user_id, s]);
-                // best-effort: clear any existing hold
-                try { await redis.del(`seat:hold:${event_id}:${s}`); await redis.srem(`event:${event_id}:holds`, s); } catch {}
-            }
-            await client.query('UPDATE eventify_events SET available_slots = GREATEST(available_slots - $1, 0), updated_at = NOW() WHERE id=$2', [seats, event_id]);
+
+            await client.query('UPDATE eventify_events SET available_slots = GREATEST(available_slots - $1, 0), updated_at = NOW() WHERE id=$2', [allocated.length, event_id]);
             // broadcast seat:booked to room
             try {
                 const io = req.app.get('io');
                 if (io) {
-                    for (const s of seatNos) {
+                    for (const s of allocated) {
                         io.to(`event:${event_id}`).emit('seat:booked', { eventId: event_id, seatNo: s });
                     }
+                    // Also broadcast availability update
+                    io.to(`event:${event_id}`).emit('event:availability:updated', { 
+                        eventId: event_id, 
+                        availableSlots: currentAvailable - allocated.length 
+                    });
                 }
             } catch {}
         }
@@ -120,7 +156,12 @@ router.post('/', async (req, res) => {
             });
         } catch { }
 
-        res.status(201).json(rows[0]);
+        // Return booking with allocated seats for confirmed bookings
+        const response = { ...rows[0] };
+        if (status === 'confirmed' && allocated.length > 0) {
+            response.allocatedSeats = allocated;
+        }
+        res.status(201).json(response);
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
@@ -139,7 +180,7 @@ router.get('/user/:userId', async (req, res) => {
                     e.name as event_name, e.description as event_description, e.category, e.event_date, e.total_slots, e.available_slots, e.org_id
              FROM eventify_bookings b
              JOIN eventify_events e ON e.id = b.event_id
-             WHERE b.user_id = $1
+             WHERE b.user_id = $1 AND b.status != 'cancelled'
              ORDER BY b.created_at DESC`,
             [userId]
         );
