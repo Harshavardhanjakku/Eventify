@@ -89,7 +89,6 @@ export default function MediaPage({ keycloak }) {
         return events.filter(ev => 
             userOrgIdsForBooking.has(ev.org_id) && 
             ev.created_by !== currentUserId && // Exclude events created by current user
-            ev.available_slots > 0 && // Only show events with available slots
             (!isSwitchView || String(ev.org_id) === String(switchOrgId))
         );
     }, [events, userOrgIdsForBooking, currentUserId, isSwitchView, switchOrgId]);
@@ -468,7 +467,7 @@ export default function MediaPage({ keycloak }) {
                                         </svg>
                                     </div>
                                     <div>
-                                        <h2 className="text-2xl font-bold text-white tracking-wide">Available Events</h2>
+                                        <h2 className="text-2xl font-bold text-white tracking-wide">Events</h2>
                                         <p className="text-sm text-white/60">Events you can book</p>
                                     </div>
                                 </div>
@@ -510,10 +509,16 @@ export default function MediaPage({ keycloak }) {
                                             </div>
                                             <div className="flex items-center justify-between mt-3 text-xs text-white/60">
                                                 <span>Total: {ev.total_slots}</span>
-                                                <span>Available: {ev.available_slots}</span>
+                                                <span className={ev.available_slots > 0 ? 'text-green-400' : 'text-red-400'}>
+                                                    {ev.available_slots > 0 ? `Available: ${ev.available_slots}` : 'No slots left'}
+                                                </span>
                                             </div>
                                             <div className="mt-4 flex items-center gap-2">
-                                                <button onClick={() => router.push(`/events/${ev.id}`)} className="px-3 py-2 bg-white/10 text-white hover:bg-white/15 border border-white/15 rounded-xl text-sm font-semibold">Book</button>
+                                                {ev.available_slots > 0 ? (
+                                                    <button onClick={() => router.push(`/events/${ev.id}`)} className="px-3 py-2 bg-white/10 text-white hover:bg-white/15 border border-white/15 rounded-xl text-sm font-semibold">Book</button>
+                                                ) : (
+                                                    <button disabled className="px-3 py-2 bg-red-500/20 text-red-300 border border-red-500/30 rounded-xl text-sm font-semibold cursor-not-allowed opacity-60">Sold Out</button>
+                                                )}
                                             </div>
                                         </div>
                                     ))}

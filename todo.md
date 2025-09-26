@@ -56,3 +56,54 @@
 - Empty-state guidance: “What’s next” cards after key actions.
 
 If you want, I can draft a prioritized UI roadmap (landing page → dashboard → orgs → invites → events) and start implementing pages incrementally.
+
+
+
+
+
+
+
+
+
+__________________
+
+Booking and Waitlist (FCFS)
+• FCFS seat claim: When someone tries to book seats, the system atomically checks remaining capacity. If enough seats exist, the booking is confirmed immediately.
+• Preferred seats honored when free: If specific seat numbers are requested and none are already taken, those exact seats are assigned. Otherwise, the lowest available seat numbers are auto-assigned.
+• Waitlist placement: If capacity is insufficient, the person is placed on a waitlist in the order they arrived. Their live position can be viewed and updates as others cancel or get promoted.
+Seat Allocation
+• Conflict-free assignment: Confirmed bookings receive seat numbers that are guaranteed not to overlap with previously assigned seats.
+• Deterministic order: If no specific seats are requested, the system assigns the lowest available numbers to keep seating compact and predictable.
+• Backfill for older bookings: If a past confirmed booking lacks recorded seat numbers, the system assigns them on-demand using the same lowest-available rule.
+Cancellation and Rebooking (Promotion)
+• Full cancellation: Cancelling a booking frees those seats. The system immediately increases capacity and starts promoting people from the waitlist in the exact order they joined.
+• Partial cancellation: Cancelling specific seat numbers frees only those seats and triggers the same promotion process.
+• Promotion logic:
+Promotes as many seats as are available.
+If the next person in line requested more seats than are available, they receive a partial confirmation for the available amount, and the remainder stays in the waitlist without losing their place.
+Seat numbers are then assigned to the newly confirmed seats using the conflict-free, lowest-available approach.
+• Real-time updates: Once promotions happen, all connected viewers are notified about newly booked seats and any seats that just became free.
+Live Waiting Position
+• Immediate visibility: People on the waitlist can see their current place in line.
+• Fallback awareness: If live data can’t be determined, the system uses a stored fallback position.
+Real-Time Seat Holds (Pre-Booking Protection)
+• Short-lived holds: While someone is selecting seats in the UI, the system temporarily “holds” those seats so others don’t select the same ones at the same time.
+• Auto-expiration: Holds expire quickly if not refreshed, preventing long-term blocking.
+• Room-wide awareness: Everyone viewing the event sees which seats are currently held and which are free in near real-time.
+Notifications
+• Booking confirmed/waitlisted: People are notified when their booking is immediately confirmed or when they’re placed on the waitlist.
+• Waitlist promoted: People are notified when they are moved from the waitlist to confirmed after seats free up.
+UI Workflows
+• Seat selection modal:
+Shows available, held, and booked seats in real-time.
+Lets people pick specific seats (if desired) and proceeds to booking.
+Keeps holds alive while the modal is open and releases them when closed or after inactivity.
+• Manage seats:
+Displays current seat assignments for a booking.
+Allows seat-by-seat cancellation, triggering immediate reallocation to the waitlist if any.
+• Cancel flow:
+A simple process to cancel a whole booking.
+Frees seats and triggers immediate promotion of waiting users.
+• Your events / booking status:
+Shows confirmed and pending (waitlisted) seats per event.
+Provides entry points to manage or cancel.
