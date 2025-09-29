@@ -389,14 +389,17 @@ router.get("/", async (req, res) => {
 
 // POST /eventify_users
 router.post("/", async (req, res) => {
-  const { keycloak_id, username, email, role } = req.body;
+  // Username is intentionally ignored; we derive it from names/email
+  const { keycloak_id, email, role } = req.body;
+  const firstNameRaw = (req.body.first_name || "").trim();
+  const lastNameRaw = (req.body.last_name || "").trim();
 
-  // Validate required fields and UUID
-  if (!keycloak_id || !username || !email) {
-    console.warn("Invalid request:", { keycloak_id, username, email });
+  // Validate required fields and UUID (relaxed: only keycloak_id + email required)
+  if (!keycloak_id || !email) {
+    console.warn("Invalid request:", { keycloak_id, email });
     return res
       .status(400)
-      .json({ error: "Missing required fields: keycloak_id, username, email" });
+      .json({ error: "Missing required fields: keycloak_id, email" });
   }
   if (!isUuid(keycloak_id)) {
     console.warn("Invalid keycloak_id:", keycloak_id);
@@ -404,6 +407,20 @@ router.post("/", async (req, res) => {
       .status(400)
       .json({ error: "Invalid keycloak_id: Must be a valid UUID" });
   }
+
+  // Derive a safe username from first/last name with fallbacks
+  const makeSlug = (s) => String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const givenSlug = makeSlug(firstNameRaw);
+  const familySlug = makeSlug(lastNameRaw);
+  let derivedUsername = [givenSlug, familySlug].filter(Boolean).join(".");
+  if (!derivedUsername) {
+    const emailUser = String(email).split("@")[0] || "user";
+    derivedUsername = makeSlug(emailUser);
+  }
+  const effectiveUsername = derivedUsername || "user";
 
   let clientInfo = null;
   let userId;
@@ -420,7 +437,7 @@ router.post("/", async (req, res) => {
   })();
 
   try {
-    console.log("Starting user registration:", { keycloak_id, username });
+    console.log("Starting user registration:", { keycloak_id, username: effectiveUsername });
 
     // Create or update user first (outside transaction to ensure it's committed)
     const userRes = await pool.query(
@@ -429,7 +446,7 @@ router.post("/", async (req, res) => {
        ON CONFLICT (keycloak_id)
        DO UPDATE SET username = EXCLUDED.username, email = EXCLUDED.email, first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, phone = EXCLUDED.phone, avatar_url = EXCLUDED.avatar_url, status = EXCLUDED.status, updated_at = CURRENT_TIMESTAMP
        RETURNING id, username`,
-      [keycloak_id, username, email, req.body.first_name || null, req.body.last_name || null, req.body.phone || null, req.body.avatar_url || null, 'active']
+      [keycloak_id, effectiveUsername, email, firstNameRaw || null, lastNameRaw || null, req.body.phone || null, req.body.avatar_url || null, 'active']
     );
     userId = userRes.rows[0].id;
     console.log("User created/updated:", { userId });
@@ -437,8 +454,11 @@ router.post("/", async (req, res) => {
     // Start transaction for organization operations
     await pool.query("BEGIN");
 
-    // Define and sanitize orgName
-    const orgName = sanitizeOrgName(`org-of-${username}`);
+    // Define and sanitize orgName preferring last name, else first name; fallback to email/user
+    const emailUserPart = String(email).split("@")[0] || effectiveUsername;
+    const nameForOrg = lastNameRaw || firstNameRaw || emailUserPart;
+    const baseOrgName = nameForOrg;
+    const orgName = sanitizeOrgName(baseOrgName);
     const domain = generateDomain(orgName); // e.g., org-of-demo19.org
 
     // Create organization in Keycloak using Organizations API
@@ -446,7 +466,7 @@ router.post("/", async (req, res) => {
       const accessToken = await getKeycloakAdminToken();
       // CREATE CLIENT FOR USER
       try {
-        clientInfo = await createKeycloakClient(accessToken, username);
+        clientInfo = await createKeycloakClient(accessToken, effectiveUsername);
         console.log("✅ Client created for user:", clientInfo);
 
         // CREATE 3 DEFAULT ROLES FOR CLIENT
@@ -601,7 +621,6 @@ router.post("/", async (req, res) => {
 
     res.status(201).json({
       id: userId,
-      username: userRes.rows[0].username,
       email: email,
       userId,
       organizationId: orgIdInDb,

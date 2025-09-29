@@ -18,7 +18,6 @@ export default function MediaPage({ keycloak }) {
         loading: orgLoading,
         error: orgError 
     } = useOrganization();
-    // Booking flow now happens via the View → seat selection modal only
     const [bookingLoading, setBookingLoading] = useState(false);
     const [message, setMessage] = useState("");
     const [myBookings, setMyBookings] = useState([]);
