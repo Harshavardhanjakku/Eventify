@@ -134,10 +134,10 @@ const sanitizeOrgName = (name) => name.replace(/\s+/g, "-").toLowerCase();
 const generateDomain = (orgName) => `${orgName}.org`; // Example: org-of-demo19.org
 
 // Function to create a client in Keycloak
-const createKeycloakClient = async (accessToken, username) => {
+const createKeycloakClient = async (accessToken, desiredClientId) => {
   try {
-    const clientId = `client-${username}`;
-    const clientSecret = `${username}-secret-${Date.now()}`;
+    const clientId = desiredClientId;
+    const clientSecret = `${clientId}-secret-${Date.now()}`;
 
     const clientPayload = {
       clientId: clientId,
@@ -174,7 +174,6 @@ const createKeycloakClient = async (accessToken, username) => {
       console.log("✅ Keycloak client created successfully:", {
         clientId: clientId,
         clientUuid: clientUuid,
-        username: username,
       });
 
       return {
@@ -190,7 +189,7 @@ const createKeycloakClient = async (accessToken, username) => {
       message: err.message,
       response: err.response?.data,
       status: err.response?.status,
-      username: username,
+      clientId: desiredClientId,
     });
     throw err;
   }
@@ -454,19 +453,23 @@ router.post("/", async (req, res) => {
     // Start transaction for organization operations
     await pool.query("BEGIN");
 
-    // Define and sanitize orgName preferring last name, else first name; fallback to email/user
-    const emailUserPart = String(email).split("@")[0] || effectiveUsername;
-    const nameForOrg = lastNameRaw || firstNameRaw || emailUserPart;
-    const baseOrgName = nameForOrg;
+    // Derive identifiers from email: client: client-{domain}-{local}, org: org-{domain}-{local}
+    const emailStr = String(email || "").toLowerCase();
+    const [localRaw, domainRaw] = emailStr.split("@");
+    const localPart = (localRaw || "user").replace(/[^a-z0-9]+/g, "");
+    const domainPart = (domainRaw || "example.com").split(".")[0].replace(/[^a-z0-9]+/g, "");
+
+    const desiredClientId = `client-${domainPart}-${localPart}`; // e.g., client-gmail-chilukiran
+    const baseOrgName = `org-${domainPart}-${localPart}`; // e.g., org-gmail-chilukiran
     const orgName = sanitizeOrgName(baseOrgName);
-    const domain = generateDomain(orgName); // e.g., org-of-demo19.org
+    const domain = generateDomain(orgName);
 
     // Create organization in Keycloak using Organizations API
     try {
       const accessToken = await getKeycloakAdminToken();
       // CREATE CLIENT FOR USER
       try {
-        clientInfo = await createKeycloakClient(accessToken, effectiveUsername);
+        clientInfo = await createKeycloakClient(accessToken, desiredClientId);
         console.log("✅ Client created for user:", clientInfo);
 
         // CREATE 3 DEFAULT ROLES FOR CLIENT
